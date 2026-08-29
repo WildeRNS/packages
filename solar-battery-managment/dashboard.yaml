@@ -1,0 +1,273 @@
+path: solar-battery
+icon: mdi:solar-power
+type: grid
+square: false
+columns: 3
+cards:
+  - type: heading
+    heading: Сонячна станція та АКБ
+  - type: vertical-stack
+    cards:
+      - type: gauge
+        entity: sensor.bms_battery_state_of_charge
+        name: Заряд АКБ (BMS SoC)
+        min: 0
+        max: 100
+        needle: true
+        severity:
+          red: 0
+          yellow: 25
+          green: 50
+      - type: entities
+        title: 🔋 Параметри Акумулятора
+        show_header_toggle: false
+        entities:
+          - entity: sensor.bms_battery_power
+            name: Потужність АКБ
+            secondary_info: last-changed
+          - entity: sensor.bms_battery_current
+            name: Струм АКБ
+            secondary_info: last-changed
+          - entity: sensor.bms_battery_total_voltage
+            name: Напруга АКБ
+            secondary_info: last-changed
+          - entity: sensor.bms_battery_remaining_capacity
+            name: Залишкова ємність (А·год)
+            secondary_info: last-changed
+          - entity: sensor.bms_battery_full_capacity
+            name: Повна ємність (А·год)
+            secondary_info: last-changed
+          - entity: sensor.bms_battery_remaining_kwh
+            name: Залишок енергії (кВт·год)
+            secondary_info: last-changed
+          - entity: sensor.bms_battery_soc_calculated
+            name: Розрахунковий SOC (%)
+            secondary_info: last-changed
+          - entity: sensor.anenji_anj_11kw_48v_wifi_p_max_charge_current
+            secondary_info: last-changed
+  - type: vertical-stack
+    cards:
+      - type: entities
+        title: ☀️ Сонячна станція та Прогноз
+        show_header_toggle: false
+        entities:
+          - entity: sensor.anenji_anj_11kw_48v_wifi_p_pv_power
+            name: Поточна потужність СЕС
+            secondary_info: last-changed
+          - entity: sensor.volcast_solar_forecast_energy_forecast_today
+            name: Прогноз генерації на сьогодні
+            secondary_info: last-changed
+          - entity: sensor.volcast_solar_forecast_solar_forecast_remaining_today
+            name: Залишок прогнозу на сьогодні
+            secondary_info: last-changed
+          - entity: sensor.battery_energy_deficit
+            name: Очікуваний дефіцит енергії (кВт·год)
+            secondary_info: last-changed
+      - type: entities
+        title: ⚡ Мережа та Навантаження
+        show_header_toggle: false
+        entities:
+          - entity: sensor.anenji_anj_11kw_48v_wifi_p_grid_voltage
+            name: Напруга мережі (AC In)
+            secondary_info: last-changed
+          - entity: sensor.1din_relay_main_power
+            name: Потужність споживання будинку
+            secondary_info: last-changed
+          - entity: sensor.1din_relay_main_current
+            name: Струм споживання будинку
+            secondary_info: last-changed
+          - entity: sensor.invertor_220_in_power
+            name: Інвертор 220V In (Потужність)
+            secondary_info: last-changed
+          - entity: sensor.invertor_220_in_current
+            name: Інвертор 220V In (Струм)
+            secondary_info: last-changed
+          - entity: sensor.overal_in_house_avr_daily_energy
+            name: Споживання за сьогодні
+            secondary_info: last-changed
+          - entity: sensor.house_average_daily_energy
+            name: Сер. добове споживання будинку
+            secondary_info: last-changed
+  - type: vertical-stack
+    cards:
+      - type: entities
+        title: ⚙️ Режими та Статуси
+        show_header_toggle: false
+        entities:
+          - entity: input_boolean.allow_grid_charge
+            name: Дозвіл зарядки від мережі
+            secondary_info: last-changed
+          - entity: binary_sensor.heating_season
+            name: Опалювальний сезон
+            secondary_info: last-changed
+          - entity: binary_sensor.night_tariff_window
+            name: Нічний тариф (23:00-07:00)
+            secondary_info: last-changed
+          - entity: binary_sensor.battery_deficit_active
+            name: Активний дефіцит енергії
+            secondary_info: last-changed
+          - entity: select.anenji_anj_11kw_48v_wifi_p_charge_source_priority
+            name: Пріоритет джерела зарядки
+            secondary_info: last-changed
+          - entity: sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority
+            name: Пріоритет виходу інвертора
+            secondary_info: last-changed
+      - type: entities
+        title: 🎛️ Налаштування лімітів
+        show_header_toggle: false
+        entities:
+          - entity: sensor.calculated_target_reserve_kwh
+            name: Розрахований цільовий резерв (кВт·год)
+            secondary_info: last-changed
+          - entity: input_number.min_target_reserve_kwh
+            name: Мін. резерв (ручна підстраховка)
+            secondary_info: last-changed
+          - entity: input_number.max_ac_charge_current
+            name: Макс. струм заряду від мережі (А)
+            secondary_info: last-changed
+          - entity: number.anenji_anj_11kw_48v_wifi_p_max_charge_current
+            name: Загальний макс. струм заряду
+            secondary_info: last-changed
+          - entity: number.anenji_anj_11kw_48v_wifi_p_max_ac_charge_current
+            name: Заданий струм мережі (Anenji)
+            secondary_info: last-changed
+  - type: custom:statistics-graph-chart-card
+    title: Моніторинг генерації та енергопотоків
+    entities:
+      - entity: sensor.anenji_anj_11kw_48v_wifi_p_pv_power
+        name: Сонячна генерація
+      - entity: sensor.bms_battery_power
+        name: Потужність АКБ
+      - entity: sensor.1din_relay_main_power
+        name: Споживання мережі
+    days_to_show: 1
+    period: hour
+    stat_types:
+      - mean
+    chart_type: line
+  - type: custom:statistics-graph-chart-card
+    title: 🔋 Баланс резерву та дефіциту АКБ
+    entities:
+      - entity: sensor.bms_battery_remaining_kwh
+        name: Залишок в АКБ
+      - entity: sensor.calculated_target_reserve_kwh
+        name: Цільовий резерв
+      - entity: sensor.battery_energy_deficit
+        name: Дефіцит енергії
+    days_to_show: 1
+    period: hour
+    stat_types:
+      - mean
+    chart_type: line
+  - type: custom:statistics-graph-chart-card
+    title: 📊 Динаміка споживання будинку
+    entities:
+      - entity: sensor.overal_in_house_avr_daily_energy
+        name: Споживання за день
+      - entity: sensor.house_average_daily_energy
+        name: Сер. добове споживання
+    days_to_show: 7
+    period: day
+    stat_types:
+      - max
+    chart_type: bar
+  - type: markdown
+    title: ⚙️ Логіка керування СЕС та АКБ
+    content: >
+      ☀️ **1. Динамічне налаштування струму заряду СЕС**
+
+
+      *Автоматизація працює тільки у режимі пріоритету виходу
+      `PV-Battery-Utility`. Струм автоматично адаптується під залишок прогнозу
+      генерації до кінця дня (`solar_forecast_remaining_today`).*
+
+
+      | Час / Залишок прогнозу | Рівень SOC | Струм заряду | Опис режиму |
+
+      | :--- | :--- | :--- | :--- |
+
+      | **06:00–21:00** *(Залишок > 5 кВт·год)* | 1% – 70% | **40 A** |
+      Обмеження при достатньому залишку сонця |
+
+      | | 71% – 80% | **30 A** | Дозаряд перед насиченням |
+
+      | | 81% – 90% | **20 A** | Помірний дозаряд |
+
+      | | 91% – 100% | **10 A** | Крапельний заряд (Float) |
+
+      | **06:00–21:00** *(Залишок ≤ 5 кВт·год)* | 1% – 50% | **50 A** |
+      Максимальний прискорений заряд (до заходу) |
+
+      | | 51% – 70% | **40 A** | Помірний заряд |
+
+      | | 71% – 80% | **30 A** | Дозаряд перед насиченням |
+
+      | | 81% – 90% | **20 A** | Помірний дозаряд |
+
+      | | 91% – 100% | **10 A** | Крапельний заряд (Float) |
+
+      | **21:00–06:00** *(Вечір / Ніч)* | Будь-який | **30 A** | Фіксований
+      нічний режим |
+
+
+      ---
+
+
+      ### 🛡️ 2. Захист від глибокого розряду та байпас мережі
+
+
+      *Перевірка виконується кожні 5 хвилин або миттєво при перетині порогів
+      SOC.*
+
+
+      * **📉 SOC < 15% (Глибокий розряд):**
+        1. Умикається DIN-реле міської мережі (`switch.invertor_220_in`).
+        2. Затримка **30 секунд** (для стабілізації напруги).
+        3. Пріоритет виходу перемикається на `PV-Utility-Battery` (будинок живиться від мережі).
+        4. Надсилається сповіщення `Persistent Notification`.
+
+      * **📈 SOC ≥ 25% (Відновлення заряду):**
+        1. Пріоритет виходу повертається на `PV-Battery-Utility` (будинок живиться від сонця/АКБ).
+        2. Затримка **30 секунд**.
+        3. Вимикається DIN-реле міської мережі.
+        4. Надсилається сповіщення `Persistent Notification`.
+
+      ---
+
+
+      ### 🔌 3. Нічний заряд від мережі за цільовим резервом
+
+
+      * **🌙 Нічний тариф:** 23:00 – 07:00.
+
+      * **❄️ Опалювальний сезон (Жовтень – Квітень):** Цільовий резерв АКБ =
+      **60%** від середньодобового споживання.
+
+      * **☀️ Літній сезон (Травень – Вересень):** Цільовий резерв АКБ = **35%**
+      від середньодобового споживання.
+
+      * **Умови запуску зарядки (з 23:00):**
+        * Перемикач *"Дозвіл заряджання від мережі"* у стані **ON**.
+        * Прогноз сонячної генерації на завтра **≤ 10 кВт·год**.
+        * Поточний залишок у кВт·год менший за розрахований цільовий резерв (або критичний SOC < 15%).
+
+      ---
+
+
+      ### 🔔 4. Контроль та підтвердження дій
+
+
+      * **Захист від дублювання:** перед відправкою команд скрипт перевіряє
+      поточний стан інвертора та DIN-реле. Якщо пристрої вже перебувають у
+      потрібній позиції, виконання зупиняється без повторного надсилання команд
+      і сповіщень.
+
+      * Кожна зміна параметрів перевіряється після виконання команди інвертору.
+
+      * При успішному виконанні у системі створюється зелене сповіщення **`✅`**.
+
+      * У разі збою зв'язку або невиконання команди надсилається аварійне
+      сповіщення **`❌`** або **`⚠️`**.
+    grid_options:
+      columns: full
+column_span: 4

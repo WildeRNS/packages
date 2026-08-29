@@ -1,0 +1,576 @@
+# ==============================================================================
+# PACKAGE: Комплексне керування інвертором Anenji, зарядом АКБ та байпасом мережі
+# Файл: /config/packages/solar_battery_management.yaml
+#
+# ПОЛНА ЛОГІКА РОБОТИ ПАКЕТУ З ПІДТВЕРДЖЕННЯМ ДІЙ У PERSISTENT_NOTIFICATION:
+# ------------------------------------------------------------------------------
+# 1. КОНТРОЛЬ СТРУМУ ЗАРЯДУ СЕС (06:00-21:00):
+#    - Змінює number.anenji_anj_11kw_48v_wifi_p_max_charge_current за діапазонами SOC.
+#    - Прогноз > 10 кВт·год: макс. струм обмежено до 40А (SOC 1-70%).
+#    - Прогноз <= 10 кВт·год: SOC 1-50% -> 50A, SOC 51-70% -> 40A, 71-80% -> 30A, 81-100% -> 10A.
+#    - Вечір/Ніч (21:00-06:00): фіксовано 30A.
+#    - Надсилає підтвердження успішного виставлення струму або сповіщення про помилку.
+#
+# 2. АВАРІЙНИЙ БАЙПАС ТА ЗАХИСТ ВІД ГЛИБОКОГО РОЗРЯДУ (SOC < 15% / >= 25%):
+#    - При SOC < 15%: вмикає DIN-реле -> 30с -> перемикає вихід на "PV-Utility-Battery" -> сповіщення.
+#    - При SOC >= 25%: повертає вихід на "PV-Battery-Utility" -> 30с -> вимикає DIN-реле -> сповіщення.
+#
+# 3. НІЧНИЙ ЗАРЯД ВІД МЕРЕЖІ ЗА ДИНАМІЧНИМ РЕЗЕРВОМ:
+#    - Розраховує добове середнє та цільовий резерв kWh (35% влітку / 60% взимку).
+#    - При старті/зупинці перевіряє напругу мережі та підтверджує результат сповіщенням.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. ВІРТУАЛЬНІ НАЛАШТУВАННЯ ТА ПЕРЕМИКАЧІ (INPUTS)
+# ------------------------------------------------------------------------------
+input_boolean:
+  allow_grid_charge:
+    name: "Дозвіл заряджання від мережі"
+    icon: mdi:power-plug-battery
+
+input_number:
+  min_target_reserve_kwh:
+    name: "Мінімальний резерв АКБ (підстраховка)"
+    min: 1.0
+    max: 20.0
+    step: 0.5
+    initial: 4.0
+    unit_of_measurement: "кВт·год"
+    icon: mdi:battery-lock
+
+  max_ac_charge_current:
+    name: "Струм зарядки від мережі"
+    min: 2
+    max: 15
+    step: 1
+    initial: 15
+    unit_of_measurement: "A"
+    icon: mdi:current-ac
+# ------------------------------------------------------------------------------
+# 2. РОЗРАХУНКОВІ ТА ШАБЛОННІ СЕНСОРИ (TEMPLATES)
+# ------------------------------------------------------------------------------
+template:
+  - trigger:
+      - platform: time
+        at: "23:59:00"
+    sensor:
+      - name: "House Average Daily Energy"
+        unique_id: house_average_daily_energy
+        unit_of_measurement: "кВт·год"
+        state_class: measurement
+        device_class: energy
+        icon: mdi:calculator
+        state: >
+          {% set today_total = states('sensor.overal_in_house_avr_daily_energy') | float(0) %}
+          {% set prev_avg = states('sensor.house_average_daily_energy') | float(0) %}
+          {% if prev_avg == 0 or prev_avg == none %}
+            {{ today_total | round(2) }}
+          {% elif today_total > 1.0 %}
+            {{ (prev_avg * 0.8 + today_total * 0.2) | round(2) }}
+          {% else %}
+            {{ prev_avg | round(2) }}
+          {% endif %}
+
+  - sensor:
+      - name: "Calculated Target Reserve kWh"
+        unique_id: calculated_target_reserve_kwh
+        unit_of_measurement: "кВт·год"
+        device_class: energy
+        state_class: measurement
+        icon: mdi:battery-charging-high
+        state: >
+          {% set full_cap = states('sensor.bms_battery_full_capacity_kwh') | float(10.0) %}
+          {% set daily_avg = states('sensor.house_average_daily_energy') | float(states('sensor.overal_in_house_avr_daily_energy') | float(10.0)) %}
+          {% set min_reserve = states('input_number.min_target_reserve_kwh') | float(3.0) %}
+          {% set is_heating = is_state('binary_sensor.heating_season', 'on') %}
+          {% set max_usable_reserve = full_cap * 0.85 %}
+          {% set ratio = 0.6 if is_heating else 0.35 %}
+          {% set raw_target = daily_avg * ratio %}
+          {{ [ [raw_target, min_reserve] | max, max_usable_reserve ] | min | round(2) }}
+
+      - name: "BMS Battery Full Capacity kWh"
+        unique_id: bms_battery_full_capacity_kwh
+        unit_of_measurement: "кВт·год"
+        device_class: energy
+        state_class: measurement
+        state: >
+          {% set ah = states('sensor.bms_battery_full_capacity') | float(0) %}
+          {% set v = states('sensor.bms_battery_total_voltage') | float(0) %}
+          {{ ((ah * v) / 1000) | round(2) }}
+
+      - name: "BMS Battery Remaining kWh"
+        unique_id: bms_battery_remaining_kwh
+        unit_of_measurement: "кВт·год"
+        device_class: energy
+        state_class: measurement
+        state: >
+          {% set ah = states('sensor.bms_battery_remaining_capacity') | float(0) %}
+          {% set v = states('sensor.bms_battery_total_voltage') | float(0) %}
+          {{ ((ah * v) / 1000) | round(2) }}
+
+      - name: "BMS Battery SOC Calculated"
+        unique_id: bms_battery_soc_calculated
+        unit_of_measurement: "%"
+        device_class: battery
+        state_class: measurement
+        state: >
+          {% set rem = states('sensor.bms_battery_remaining_capacity') | float(0) %}
+          {% set full = states('sensor.bms_battery_full_capacity') | float(1) %}
+          {% if full > 0 %}
+            {{ ((rem / full) * 100) | round(1) }}
+          {% else %}
+            0
+          {% endif %}
+
+      - name: "Battery Energy Deficit"
+        unique_id: battery_energy_deficit
+        unit_of_measurement: "кВт·год"
+        state_class: measurement
+        icon: mdi:battery-alert
+        state: >
+          {% set target = states('sensor.calculated_target_reserve_kwh') | float(0) %}
+          {% set rem_kwh = states('sensor.bms_battery_remaining_kwh') | float(0) %}
+          {% set solar_forecast_remaining = states('sensor.volcast_solar_forecast_solar_forecast_remaining_today') | float(0) %}
+          {% set deficit = target - (rem_kwh + solar_forecast_remaining) %}
+          {{ [deficit, 0] | max | round(2) }}
+
+  - binary_sensor:
+      - name: "Heating Season"
+        unique_id: heating_season
+        icon: mdi:radiator
+        state: >
+          {% set m = now().month %}
+          {{ m >= 10 or m <= 4 }}
+
+      - name: "Night Tariff Window"
+        unique_id: night_tariff_window
+        icon: mdi:weather-night
+        state: >
+          {% set h = now().hour %}
+          {{ h >= 23 or h < 7 }}
+
+      - name: "Battery Deficit Active"
+        unique_id: battery_deficit_active
+        icon: mdi:battery-minus
+        state: >
+          {{ states('sensor.battery_energy_deficit') | float(0) > 0.3 }}
+
+# ------------------------------------------------------------------------------
+# 3. СКРИПТИ ВИКОНАННЯ ДІЙ З ДВОСТОРОННІМИ СПОВІЩЕННЯМИ (SCRIPTS)
+# ------------------------------------------------------------------------------
+script:
+  switch_to_grid_bypass:
+    alias: "[Anenji] Переключення виходу на МЕРЕЖУ (з затримкою реле)"
+    mode: single
+    sequence:
+      - if:
+          - condition: template
+            value_template: >
+              {% set output_grid = is_state('select.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') or is_state('sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') %}
+              {% set relay_on = is_state('switch.invertor_220_in', 'on') %}
+              {{ output_grid and relay_on }}
+        then:
+          - stop: "Вихід вже у режимі PV-Utility-Battery та DIN-реле увімкнено."
+
+      - action: switch.turn_on
+        target:
+          entity_id: switch.invertor_220_in
+
+      - delay:
+          seconds: 30
+
+      - action: select.select_option
+        target:
+          entity_id: select.anenji_anj_11kw_48v_wifi_p_output_source_priority
+        data:
+          option: "PV-Utility-Battery"
+
+      - delay:
+          seconds: 30
+
+      - if:
+          - condition: template
+            value_template: >
+              {{ not is_state('select.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') and not is_state('sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') }}
+        then:
+          - action: persistent_notification.create
+            data:
+              title: "⚠️ Помилка переключення виходу Anenji"
+              message: "Пріоритет виходу НЕ змінився на 'PV-Utility-Battery'!"
+        else:
+          - action: persistent_notification.create
+            data:
+              title: "✅ Успішне переключення на МЕРЕЖУ"
+              message: "Вихід інвертора успішно переключено на 'PV-Utility-Battery'. DIN-реле увімкнено (SOC: {{ states('sensor.bms_battery_state_of_charge') }}%)."
+
+  switch_to_solar_bypass:
+    alias: "[Anenji] Переключення виходу на СОНЦЕ/АКБ (з затримкою реле)"
+    mode: single
+    sequence:
+      - if:
+          - condition: template
+            value_template: >
+              {% set output_ok = is_state('select.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Battery-Utility') or is_state('sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Battery-Utility') %}
+              {% set relay_off = is_state('switch.invertor_220_in', 'off') %}
+              {% set is_charging = is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Priority') %}
+              {{ output_ok and (relay_off or is_charging) }}
+        then:
+          - stop: "Вихід інвертора вже у режимі PV-Battery-Utility, додаткові дії не потрібні."
+
+      - action: select.select_option
+        target:
+          entity_id: select.anenji_anj_11kw_48v_wifi_p_output_source_priority
+        data:
+          option: "PV-Battery-Utility"
+
+      - delay:
+          seconds: 30
+
+      - if:
+          - condition: template
+            value_template: >
+              {{ not is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Priority') }}
+        then:
+          - action: switch.turn_off
+            target:
+              entity_id: switch.invertor_220_in
+
+      - delay:
+          seconds: 30
+
+      - if:
+          - condition: template
+            value_template: >
+              {{ not is_state('select.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Battery-Utility') and not is_state('sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Battery-Utility') }}
+        then:
+          - action: persistent_notification.create
+            data:
+              title: "⚠️ Помилка переключення виходу Anenji"
+              message: "Пріоритет виходу НЕ змінився на 'PV-Battery-Utility'!"
+        else:
+          - action: persistent_notification.create
+            data:
+              title: "✅ Успішне повернення на СОНЦЕ/АКБ"
+              message: "Вихід інвертора переключено на 'PV-Battery-Utility'. DIN-реле вимкнено (SOC: {{ states('sensor.bms_battery_state_of_charge') }}%)."
+
+  start_grid_charge:
+    alias: "[Anenji] Запуск зарядки АКБ від мережі"
+    icon: mdi:battery-charging-100
+    sequence:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.invertor_220_in
+
+      - wait_template: >
+          {{ states('sensor.anenji_anj_11kw_48v_wifi_p_grid_voltage') | float(0) > 180 }}
+        timeout: "00:00:30"
+        continue_on_timeout: true
+
+      - if:
+          - condition: template
+            value_template: >
+              {{ states('sensor.anenji_anj_11kw_48v_wifi_p_grid_voltage') | float(0) <= 180 }}
+        then:
+          - action: persistent_notification.create
+            data:
+              title: "⚠️ Зарядку скасовано"
+              message: "DIN-реле увімкнено, але напруга в міській мережі відсутня (Блекаут). Реле вимкнено."
+          - action: switch.turn_off
+            target:
+              entity_id: switch.invertor_220_in
+          - stop: "Міська мережа відсутня"
+
+      - action: select.select_option
+        target:
+          entity_id: select.anenji_anj_11kw_48v_wifi_p_charge_source_priority
+        data:
+          option: "PV Priority"
+
+      - action: number.set_value
+        target:
+          entity_id: number.anenji_anj_11kw_48v_wifi_p_max_ac_charge_current
+        data:
+          value: "{{ states('input_number.max_ac_charge_current') | int(15) }}"
+
+      - delay:
+          seconds: 30
+
+      - if:
+          - condition: template
+            value_template: >
+              {{ not is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Priority') }}
+        then:
+          - action: persistent_notification.create
+            data:
+              title: "⚠️ Помилка налаштування Anenji"
+              message: "Пріоритет зарядки НЕ змінився на 'PV Priority'!"
+        else:
+          - action: persistent_notification.create
+            data:
+              title: "🔌 Успішно розпочато зарядку від мережі"
+              message: "Пріоритет зарядки встановлено на 'PV Priority', струм заряду: {{ states('input_number.max_ac_charge_current') }}A."
+
+  stop_grid_charge:
+    alias: "[Anenji] Зупинка зарядки АКБ від мережі"
+    icon: mdi:battery-charging-off
+    mode: single
+    sequence:
+      - if:
+          - condition: template
+            value_template: >
+              {{ is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Only') and is_state('switch.invertor_220_in', 'off') }}
+        then:
+          - stop: "Інвертор вже у режимі PV Only та DIN-реле вимкнено. Зайві команди не надсилалися."
+
+      - action: select.select_option
+        target:
+          entity_id: select.anenji_anj_11kw_48v_wifi_p_charge_source_priority
+        data:
+          option: "PV Only"
+
+      - delay:
+          seconds: 5
+
+      - action: switch.turn_off
+        target:
+          entity_id: switch.invertor_220_in
+
+      - delay:
+          seconds: 5
+
+      - if:
+          - condition: template
+            value_template: >
+              {{ is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Only') and is_state('switch.invertor_220_in', 'off') }}
+        then:
+          - action: persistent_notification.create
+            data:
+              title: "🛑 Зарядку від мережі зупинено"
+              message: "Пріоритет зарядки повернуто на 'PV Only', DIN-реле мережі вимкнено."
+        else:
+          - action: persistent_notification.create
+            data:
+              title: "⚠️ Зауваження при зупинці зарядки"
+              message: "Пріоритет зарядки або стан DIN-реле потребують додаткової перевірки."
+
+  set_solar_charge_current:
+    alias: "[Anenji] Встановлення струму заряду СЕС з підтвердженням"
+    mode: queued
+    sequence:
+      - action: number.set_value
+        target:
+          entity_id: number.anenji_anj_11kw_48v_wifi_p_max_charge_current
+        data:
+          value: "{{ target_current }}"
+
+      - wait_template: >
+          {{ states('number.anenji_anj_11kw_48v_wifi_p_max_charge_current') | int(0) == target_current | int(0) }}
+        timeout: "00:00:30"
+
+      - if:
+          - condition: template
+            value_template: >
+              {{ states('number.anenji_anj_11kw_48v_wifi_p_max_charge_current') | int(0) == target_current | int(0) }}
+        then:
+          - action: persistent_notification.create
+            data:
+              title: "✅ Струм заряду Anenji змінено"
+              message: "Успішно встановлено струм {{ target_current }}А (Прогноз: {{ states('sensor.volcast_solar_forecast_energy_forecast_today') }} кВт·год, SOC: {{ states('sensor.bms_battery_state_of_charge') }}%)."
+        else:
+          - action: persistent_notification.create
+            data:
+              title: "❌ Помилка налаштування струму Anenji"
+              message: "Не вдалося виставити струм {{ target_current }}А! Поточне значення: {{ states('number.anenji_anj_11kw_48v_wifi_p_max_charge_current') }}А."
+
+# ------------------------------------------------------------------------------
+# 4. АВТОМАТИЗАЦІЇ (AUTOMATIONS)
+# ------------------------------------------------------------------------------
+automation:
+  - id: solar_max_charge_current_control
+    alias: "Автоматизація: Налаштування струму заряду сонячної системи"
+    description: "Змінює number.anenji_anj_11kw_48v_wifi_p_max_charge_current залежно від % SOC, часу доби та залишку прогнозу СЕС."
+    mode: restart
+    trigger:
+      - platform: state
+        entity_id: sensor.bms_battery_state_of_charge
+      - platform: state
+        entity_id: sensor.bms_battery_soc_calculated
+      - platform: state
+        entity_id: sensor.volcast_solar_forecast_solar_forecast_remaining_today
+      - platform: state
+        entity_id: select.anenji_anj_11kw_48v_wifi_p_output_source_priority
+        to: "PV-Battery-Utility"
+      - platform: state
+        entity_id: sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority
+        to: "PV-Battery-Utility"
+      - platform: time
+        at: "06:00:00"
+      - platform: time
+        at: "21:00:00"
+    condition:
+      - condition: or
+        conditions:
+          - condition: state
+            entity_id: select.anenji_anj_11kw_48v_wifi_p_output_source_priority
+            state: "PV-Battery-Utility"
+          - condition: state
+            entity_id: sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority
+            state: "PV-Battery-Utility"
+    action:
+      - variables:
+          target_current: >
+            {% set rem_forecast = states('sensor.volcast_solar_forecast_solar_forecast_remaining_today') | float(0) %}
+            {% set soc = states('sensor.bms_battery_state_of_charge') | float(states('sensor.bms_battery_soc_calculated') | float(0)) %}
+            {% set h = now().hour %}
+            {% if h >= 6 and h < 21 %}
+              {% if rem_forecast > 5.0 %}
+                {% if soc <= 70 %} 40
+                {% elif soc <= 80 %} 30
+                {% elif soc <= 90 %} 20
+                {% else %} 10
+                {% endif %}
+              {% else %}
+                {% if soc <= 50 %} 50
+                {% elif soc <= 70 %} 40
+                {% elif soc <= 80 %} 30
+                {% elif soc <= 90 %} 20
+                {% else %} 10
+                {% endif %}
+              {% endif %}
+            {% else %}
+              30
+            {% endif %}
+
+      - if:
+          - condition: template
+            value_template: >
+              {{ states('number.anenji_anj_11kw_48v_wifi_p_max_charge_current') | int(0) != target_current | int(0) }}
+        then:
+          - action: script.set_solar_charge_current
+            data:
+              target_current: "{{ target_current }}"
+
+  - id: solar_battery_grid_charge_logic
+    alias: "Автоматизація: Керування зарядом АКБ від мережі"
+    description: "Аналіз дефіциту з 15:00, двотарифна логіка, сезонні правила та контроль динамічного цільового резерву"
+    mode: single
+    trigger:
+      - platform: time
+        at: "15:00:00"
+        id: afternoon_check
+      - platform: time
+        at: "23:00:00"
+        id: night_start
+      - platform: time
+        at: "07:00:00"
+        id: night_end
+      - platform: state
+        entity_id: input_boolean.allow_grid_charge
+        id: allow_switch_changed
+      - platform: template
+        value_template: >
+          {{ states('sensor.bms_battery_remaining_kwh') | float(0) >= states('sensor.calculated_target_reserve_kwh') | float(0) }}
+        id: target_reached
+      - platform: numeric_state
+        entity_id: sensor.bms_battery_soc_calculated
+        below: 15
+        id: critical_low
+
+    action:
+      - choose:
+          - conditions:
+              - condition: or
+                conditions:
+                  - condition: state
+                    entity_id: input_boolean.allow_grid_charge
+                    state: "off"
+                  - condition: trigger
+                    id: target_reached
+                  - condition: template
+                    value_template: >
+                      {{ trigger.id == 'night_end' and is_state('binary_sensor.heating_season', 'off') }}
+            sequence:
+              - action: script.stop_grid_charge
+
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.allow_grid_charge
+                state: "on"
+              - condition: template
+                value_template: >
+                  {{ states('sensor.volcast_solar_forecast_energy_forecast_tomorrow') | float(0) <= 10.0 }}
+              - condition: template
+                value_template: >
+                  {{ states('sensor.bms_battery_remaining_kwh') | float(0) < states('sensor.calculated_target_reserve_kwh') | float(0) }}
+              - condition: template
+                value_template: >
+                  {% set is_heating = is_state('binary_sensor.heating_season', 'on') %}
+                  {% set is_night = is_state('binary_sensor.night_tariff_window', 'on') %}
+                  {% set deficit_active = is_state('binary_sensor.battery_deficit_active', 'on') %}
+                  {% set is_critical = states('sensor.bms_battery_soc_calculated') | float(100) < 15 %}
+                  {{ (is_heating and deficit_active) or is_night or is_critical }}
+            sequence:
+              - action: script.start_grid_charge
+
+  - id: solar_battery_soc_bypass_logic
+    alias: "Автоматизація: Байпас мережі за рівнем SOC (15% / 25%)"
+    description: "Перевірка щохвилини та при зміні стану: при SOC < 15% умикає мережу (PV-Utility-Battery), при SOC >= 25% повертає на сонце (PV-Battery-Utility)"
+    mode: single
+    trigger:
+      - platform: time_pattern
+        minutes: "/5"
+      - platform: numeric_state
+        entity_id: sensor.bms_battery_soc_calculated
+        below: 15
+      - platform: numeric_state
+        entity_id: sensor.bms_battery_state_of_charge
+        below: 15
+      - platform: numeric_state
+        entity_id: sensor.bms_battery_soc_calculated
+        above: 24.9
+      - platform: numeric_state
+        entity_id: sensor.bms_battery_state_of_charge
+        above: 24.9
+
+    # 🛑 ЗАХИСТ ВІД ХИБНОГО СТАРТУ ПІСЛЯ РЕБУТУ (3 хвилини затримки)
+    condition:
+      - condition: template
+        value_template: >
+          {% set up = states('sensor.online') %}
+          {% if up in ['unknown', 'unavailable', 'none', ''] %}
+            false
+          {% else %}
+            {{ (now() - up | as_datetime).total_seconds() > 180 }}
+          {% endif %}
+
+    action:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: >
+                  {% set soc = states('sensor.bms_battery_state_of_charge') | float(states('sensor.bms_battery_soc_calculated') | float(100)) %}
+                  {{ soc < 15 }}
+              - condition: or
+                conditions:
+                  - condition: template
+                    value_template: >
+                      {{ not is_state('select.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') and not is_state('sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') }}
+                  - condition: state
+                    entity_id: switch.invertor_220_in
+                    state: "off"
+            sequence:
+              - action: script.switch_to_grid_bypass
+
+          - conditions:
+              - condition: template
+                value_template: >
+                  {% set soc = states('sensor.bms_battery_state_of_charge') | float(states('sensor.bms_battery_soc_calculated') | float(0)) %}
+                  {{ soc >= 25 }}
+              - condition: template
+                value_template: >
+                  {% set is_output_grid = is_state('select.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') or is_state('sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') %}
+                  {% set is_charging_grid = is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Priority') %}
+                  {% set relay_on = is_state('switch.invertor_220_in', 'on') %}
+                  {{ is_output_grid or (relay_on and not is_charging_grid) }}
+            sequence:
+              - action: script.switch_to_solar_bypass
