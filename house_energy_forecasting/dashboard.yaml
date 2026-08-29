@@ -1,0 +1,118 @@
+type: grid
+cards:
+  - type: vertical-stack
+    cards:
+      - type: grid
+        columns: 2
+        square: false
+        cards:
+          - type: tile
+            entity: sensor.house_energy_forecast_today
+            name: Прогноз (Сьогодні)
+            icon: mdi:chart-timeline-variant
+            color: amber
+            state_content:
+              - state
+              - last-changed
+          - type: tile
+            entity: sensor.house_energy_forecast_tomorrow
+            name: Прогноз (Завтра)
+            icon: mdi:chart-line
+            color: blue
+            state_content:
+              - state
+              - last-changed
+      - type: entities
+        title: ⚡ Деталізація розрахунків
+        show_header_toggle: false
+        entities:
+          - entity: sensor.house_energy_forecast_today
+            name: Прогноз на сьогодні
+          - type: attribute
+            entity: sensor.house_energy_forecast_today
+            attribute: base_load_kwh
+            name: ↳ Базове навантаження (без СЕС)
+            unit: кВт·год
+            icon: mdi:home-lightning-rail
+          - type: attribute
+            entity: sensor.house_energy_forecast_today
+            attribute: volcast_forecast_kwh
+            name: ↳ Очікувана генерація Volcast
+            unit: кВт·год
+            icon: mdi:solar-power
+          - type: divider
+          - entity: sensor.house_energy_forecast_tomorrow
+            name: Прогноз на завтра
+          - type: attribute
+            entity: sensor.house_energy_forecast_tomorrow
+            attribute: base_load_kwh
+            name: ↳ Базове навантаження (без СЕС)
+            unit: кВт·год
+            icon: mdi:home-lightning-rail
+          - type: attribute
+            entity: sensor.house_energy_forecast_tomorrow
+            attribute: volcast_forecast_kwh
+            name: ↳ Очікувана генерація Volcast
+            unit: кВт·год
+            icon: mdi:solar-power
+          - type: divider
+          - entity: sensor.house_daily_energy_7d_avg
+            name: Сер. споживання (7 дн)
+            icon: mdi:counter
+          - entity: sensor.solar_daily_energy_7d_avg
+            name: Сер. генерація СЕС (7 дн)
+            icon: mdi:solar-panel-large
+  - type: custom:statistics-graph-chart-card
+    title: 📊 Тренд енергобалансу будинку
+    days_to_show: 14
+    chart_type: line
+    smooth: true
+    show_date_picker: true
+    show_average_line: true
+    entities:
+      - entity: sensor.house_daily_energy_7d_avg
+        name: Сер. споживання (7д)
+        color: '#e67e22'
+        unit: kWh
+      - entity: sensor.solar_daily_energy_7d_avg
+        name: Сер. генерація СЕС (7д)
+        color: '#f1c40f'
+        unit: kWh
+      - entity: sensor.house_energy_forecast_today
+        name: Прогноз споживання
+        color: '#1abc9c'
+        unit: kWh
+      - entity: sensor.volcast_solar_forecast_energy_forecast_today
+        name: Прогноз Volcast
+        color: '#2980b9'
+        unit: kWh
+    grid_options:
+      columns: 12
+      rows: auto
+  - type: custom:statistics-graph-chart-card
+    title: 📈 Порівняння Споживання та Генерації
+    hours_to_show: 168
+    chart_type: line
+    show_legend: true
+    smooth: true
+    entities:
+      - entity: sensor.solar_power_generation_day
+        name: Фактична генерація СЕС
+        chart_type: bar
+        color: '#f39c12'
+        unit: kWh
+        show_range_values: true
+      - entity: sensor.overal_in_house_avr_daily_energy_total
+        name: Фактичне споживання
+        chart_type: bar
+        color: '#e74c3c'
+        unit: kWh
+      - entity: sensor.house_energy_forecast_today
+        name: Прогноз споживання (Сьогодні)
+        color: '#2ecc71'
+        unit: kWh
+      - entity: sensor.volcast_solar_forecast_energy_forecast_today
+        name: Прогноз Volcast (Сьогодні)
+        color: '#3498db'
+        unit: kWh
+column_span: 4
