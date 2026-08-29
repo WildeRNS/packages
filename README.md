@@ -1,1 +1,4 @@
-solar-battery-managment - Solar Battery Management Package for Home Assistant
+# solar-battery-managment - Solar Battery Management Package for Home Assistant
+Комплексний пакет налаштувань (YAML Package) для Home Assistant, призначений для інтелектуального керування гібридним сонячним інвертором (Anenji / PowMr / Voltronic), акумуляторною батареєю (LiFePO4 з BMS) та зовнішнім DIN-реле введення мережі 220В.
+
+Пакет оптимізує споживання в умовах графіків відключень, автоматично підраховує необхідний резерв енергії, захищає батарею від глибокого розряду та динамічно регулює струм заряду від сонячних панелей (СЕС) і міської мережі.
