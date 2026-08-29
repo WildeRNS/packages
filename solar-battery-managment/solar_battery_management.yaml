@@ -1,23 +1,6 @@
 # ==============================================================================
 # PACKAGE: Комплексне керування інвертором Anenji, зарядом АКБ та байпасом мережі
 # Файл: /config/packages/solar_battery_management.yaml
-#
-# ПОЛНА ЛОГІКА РОБОТИ ПАКЕТУ З ПІДТВЕРДЖЕННЯМ ДІЙ У PERSISTENT_NOTIFICATION:
-# ------------------------------------------------------------------------------
-# 1. КОНТРОЛЬ СТРУМУ ЗАРЯДУ СЕС (06:00-21:00):
-#    - Змінює number.anenji_anj_11kw_48v_wifi_p_max_charge_current за діапазонами SOC.
-#    - Прогноз > 10 кВт·год: макс. струм обмежено до 40А (SOC 1-70%).
-#    - Прогноз <= 10 кВт·год: SOC 1-50% -> 50A, SOC 51-70% -> 40A, 71-80% -> 30A, 81-100% -> 10A.
-#    - Вечір/Ніч (21:00-06:00): фіксовано 30A.
-#    - Надсилає підтвердження успішного виставлення струму або сповіщення про помилку.
-#
-# 2. АВАРІЙНИЙ БАЙПАС ТА ЗАХИСТ ВІД ГЛИБОКОГО РОЗРЯДУ (SOC < 15% / >= 25%):
-#    - При SOC < 15%: вмикає DIN-реле -> 30с -> перемикає вихід на "PV-Utility-Battery" -> сповіщення.
-#    - При SOC >= 25%: повертає вихід на "PV-Battery-Utility" -> 30с -> вимикає DIN-реле -> сповіщення.
-#
-# 3. НІЧНИЙ ЗАРЯД ВІД МЕРЕЖІ ЗА ДИНАМІЧНИМ РЕЗЕРВОМ:
-#    - Розраховує добове середнє та цільовий резерв kWh (35% влітку / 60% взимку).
-#    - При старті/зупинці перевіряє напругу мережі та підтверджує результат сповіщенням.
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -46,6 +29,7 @@ input_number:
     initial: 15
     unit_of_measurement: "A"
     icon: mdi:current-ac
+
 # ------------------------------------------------------------------------------
 # 2. РОЗРАХУНКОВІ ТА ШАБЛОННІ СЕНСОРИ (TEMPLATES)
 # ------------------------------------------------------------------------------
@@ -211,11 +195,20 @@ script:
           - condition: template
             value_template: >
               {% set output_ok = is_state('select.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Battery-Utility') or is_state('sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Battery-Utility') %}
-              {% set relay_off = is_state('switch.invertor_220_in', 'off') %}
-              {% set is_charging = is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Priority') %}
-              {{ output_ok and (relay_off or is_charging) }}
+              {{ output_ok }}
         then:
-          - stop: "Вихід інвертора вже у режимі PV-Battery-Utility, додаткові дії не потрібні."
+          - if:
+              - condition: state
+                entity_id: switch.invertor_220_in
+                state: "on"
+              - condition: template
+                value_template: >
+                  {{ not is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Priority') }}
+            then:
+              - action: switch.turn_off
+                target:
+                  entity_id: switch.invertor_220_in
+          - stop: "Вихід інвертора вже у режимі PV-Battery-Utility, додаткові дії та сповіщення не потрібні."
 
       - action: select.select_option
         target:
@@ -322,18 +315,18 @@ script:
         then:
           - stop: "Інвертор вже у режимі PV Only та DIN-реле вимкнено. Зайві команди не надсилалися."
 
+      - action: switch.turn_off
+        target:
+          entity_id: switch.invertor_220_in
+
+      - delay:
+          seconds: 5
+
       - action: select.select_option
         target:
           entity_id: select.anenji_anj_11kw_48v_wifi_p_charge_source_priority
         data:
           option: "PV Only"
-
-      - delay:
-          seconds: 5
-
-      - action: switch.turn_off
-        target:
-          entity_id: switch.invertor_220_in
 
       - delay:
           seconds: 5
@@ -569,8 +562,6 @@ automation:
               - condition: template
                 value_template: >
                   {% set is_output_grid = is_state('select.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') or is_state('sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') %}
-                  {% set is_charging_grid = is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Priority') %}
-                  {% set relay_on = is_state('switch.invertor_220_in', 'on') %}
-                  {{ is_output_grid or (relay_on and not is_charging_grid) }}
+                  {{ is_output_grid }}
             sequence:
               - action: script.switch_to_solar_bypass
