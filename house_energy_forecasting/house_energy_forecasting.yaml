@@ -1,0 +1,182 @@
+# ==============================================================================
+# PACKAGE: Прогнозування добового споживання електроенергії будинком (v2.5)
+# 
+# Джерела даних:
+#  - Прогноз сонячної генерації: Volcast Solar Forecast
+#  - Фактична генерація: sensor.solar_power_generation_day
+#  - Фактичне споживання: sensor.overal_in_house_avr_daily_energy_total
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. СЕНСОРИ СТАТИСТИКИ ЗА 7 ДНІВ (Базові метрики для алгоритму)
+# ------------------------------------------------------------------------------
+sensor:
+  # Середнє добове споживання будинку за останні 7 днів
+  - platform: statistics
+    name: "House Daily Energy 7d Avg"
+    entity_id: sensor.overal_in_house_avr_daily_energy_total
+    state_characteristic: mean
+    max_age:
+      days: 7
+
+  # Динамічна база: мінімальне добове споживання за останні 7 днів
+  - platform: statistics
+    name: "House Daily Energy 7d Min"
+    entity_id: sensor.overal_in_house_avr_daily_energy_total
+    state_characteristic: value_min
+    max_age:
+      days: 7
+
+  # Середнє добове виробництво СЕС за останні 7 днів
+  - platform: statistics
+    name: "Solar Daily Energy 7d Avg"
+    entity_id: sensor.solar_power_generation_day
+    state_characteristic: mean
+    max_age:
+      days: 7
+
+# ------------------------------------------------------------------------------
+# 2. ТРИГЕРНІ ШАБЛОННІ СЕНСОРИ ПРОГНОЗУВАННЯ
+# ------------------------------------------------------------------------------
+template:
+  # ----------------------------------------------------------------------------
+  # Прогноз споживання НА ЗАВТРА
+  # ----------------------------------------------------------------------------
+  - trigger:
+      - platform: time
+        at: "20:00:00" # Вечірній розрахунок перед наступним днем
+      - platform: state
+        entity_id: sensor.volcast_solar_forecast_energy_forecast_tomorrow # Перерахунок при оновленні прогнозу Volcast
+      - platform: homeassistant
+        event: start # Автоматичний розрахунок при старті HA
+      - platform: event
+        event_type: event_template_reloaded # Автоматичний розрахунок при оновленні шаблонів у розробника
+    sensor:
+      - name: "Прогноз споживання електроенергії на завтра"
+        unique_id: house_energy_forecast_tomorrow
+        unit_of_measurement: "kWh"
+        device_class: energy
+        state_class: measurement
+        icon: mdi:chart-line
+        state: >
+          {# 1. Зчитування вхідних даних прогнозу та статистики #}
+          {% set s_volcast = states('sensor.volcast_solar_forecast_energy_forecast_tomorrow') | float(0) %}
+          {% set c_7d_avg  = states('sensor.house_daily_energy_7d_avg') | float(0) %}
+          {% set c_7d_min  = states('sensor.house_daily_energy_7d_min') | float(c_7d_avg * 0.4) %}
+          {% set c_yest    = states('sensor.overal_in_house_avr_daily_energy_total') | float(c_7d_avg) %}
+          {% set s_7d_avg  = states('sensor.solar_daily_energy_7d_avg') | float(0) %}
+
+          {# Зчитування прогнозу температури (за замовчуванням 23°C - нейтральна комфортна зона) #}
+          {% set temp_tomorrow = state_attr('weather.home', 'forecast')[0].temperature | float(23) if state_attr('weather.home', 'forecast') else 23 %}
+
+          {% if c_7d_avg > 0 and s_7d_avg > 0 %}
+            {# 2. Зважене середнє споживання (50% вчорашній день + 50% тижневий тренд) #}
+            {% set blended_cons = (c_yest * 0.5) + (c_7d_avg * 0.5) %}
+
+            {# 3. Динамічне базове навантаження (найменше споживання за тиждень або мін. 30% від середньозваженого) #}
+            {% set base_load = [c_7d_min, blended_cons * 0.3] | max %}
+
+            {# 4. Коефіцієнт сонячно-залежного споживання від Volcast (враховує автоматичне вирівнювання залишків СЕС) #}
+            {% set solar_factor = (blended_cons - base_load) / s_7d_avg %}
+            {% set raw_predicted = base_load + (s_volcast * solar_factor) %}
+
+            {# 5. Температурна корекція (Комфортна зона: 22°C ... 24°C) #}
+            {% set temp_offset = 0.0 %}
+            {% if temp_tomorrow > 24 %}
+              {# Літо / Кондиціонування: +0.4 кВт·год на кожен 1°C вище 24°C #}
+              {% set temp_offset = (temp_tomorrow - 24) * 0.4 %}
+            {% elif temp_tomorrow < 22 %}
+              {# Зима / Обігрів: +0.5 кВт·год на кожен 1°C нижче 22°C #}
+              {% set temp_offset = (22 - temp_tomorrow) * 0.5 %}
+            {% endif %}
+
+            {# 6. Коригування на вихідний день (+12% у вихідні за лічильником workday) #}
+            {% set is_weekend = is_state('binary_sensor.workday_sensor', 'off') if states('binary_sensor.workday_sensor') != 'unknown' else false %}
+            {% set day_multiplier = 1.12 if is_weekend else 1.0 %}
+
+            {# 7. Фінальний розрахунок та обмеження сатурації (верхня межа: +35% max, нижня: base_load) #}
+            {% set calculated = (raw_predicted + temp_offset) * day_multiplier %}
+            {% set max_limit = blended_cons * 1.35 %}
+            {{ [ [calculated, base_load] | max, max_limit ] | min | round(2) }}
+          {% else %}
+            {# Фоллбек, якщо немає збереженої тижневої статистики #}
+            {{ c_7d_avg | round(2) }}
+          {% endif %}
+        attributes:
+          calculated_at: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+          volcast_forecast_kwh: "{{ states('sensor.volcast_solar_forecast_energy_forecast_tomorrow') }}"
+          base_load_kwh: >
+            {% set c_7d_avg = states('sensor.house_daily_energy_7d_avg') | float(0) %}
+            {% set c_7d_min = states('sensor.house_daily_energy_7d_min') | float(c_7d_avg * 0.4) %}
+            {{ [c_7d_min, c_7d_avg * 0.3] | max | round(2) }}
+
+  # ----------------------------------------------------------------------------
+  # Прогноз споживання НА СЬОГОДНІ
+  # ----------------------------------------------------------------------------
+  - trigger:
+      - platform: time
+        at: "06:00:00" # Ранковий розрахунок на поточну добу
+      - platform: state
+        entity_id: sensor.volcast_solar_forecast_energy_forecast_today # Перерахунок при оновленні прогнозу Volcast
+      - platform: homeassistant
+        event: start # Автоматичний розрахунок при старті HA
+      - platform: event
+        event_type: event_template_reloaded # Автоматичний розрахунок при оновленні шаблонів у розробника
+    sensor:
+      - name: "Прогноз споживання електроенергії на сьогодні"
+        unique_id: house_energy_forecast_today
+        unit_of_measurement: "kWh"
+        device_class: energy
+        state_class: measurement
+        icon: mdi:chart-timeline-variant
+        state: >
+          {# 1. Зчитування вхідних даних прогнозу та статистики на сьогодні #}
+          {% set s_volcast = states('sensor.volcast_solar_forecast_energy_forecast_today') | float(0) %}
+          {% set c_7d_avg  = states('sensor.house_daily_energy_7d_avg') | float(0) %}
+          {% set c_7d_min  = states('sensor.house_daily_energy_7d_min') | float(c_7d_avg * 0.4) %}
+          {% set c_yest    = states('sensor.overal_in_house_avr_daily_energy_total') | float(c_7d_avg) %}
+          {% set s_7d_avg  = states('sensor.solar_daily_energy_7d_avg') | float(0) %}
+
+          {# Зчитування прогнозу температури на сьогодні #}
+          {% set temp_today = state_attr('weather.home', 'forecast')[0].temperature | float(23) if state_attr('weather.home', 'forecast') else 23 %}
+
+          {% if c_7d_avg > 0 and s_7d_avg > 0 %}
+            {# 2. Зважене середнє споживання (50% вчорашній день + 50% тижневий тренд) #}
+            {% set blended_cons = (c_yest * 0.5) + (c_7d_avg * 0.5) %}
+
+            {# 3. Динамічне базове навантаження (найменше споживання за тиждень або мін. 30% від середньозваженого) #}
+            {% set base_load = [c_7d_min, blended_cons * 0.3] | max %}
+
+            {# 4. Коефіцієнт сонячно-залежного споживання від Volcast #}
+            {% set solar_factor = (blended_cons - base_load) / s_7d_avg %}
+            {% set raw_predicted = base_load + (s_volcast * solar_factor) %}
+
+            {# 5. Температурна корекція (Комфортна зона: 22°C ... 24°C) #}
+            {% set temp_offset = 0.0 %}
+            {% if temp_today > 24 %}
+              {# Літо / Кондиціонування: +0.4 кВт·год на кожен 1°C вище 24°C #}
+              {% set temp_offset = (temp_today - 24) * 0.4 %}
+            {% elif temp_today < 22 %}
+              {# Зима / Обігрів: +0.5 кВт·год на кожен 1°C нижче 22°C #}
+              {% set temp_offset = (22 - temp_today) * 0.5 %}
+            {% endif %}
+
+            {# 6. Коригування на вихідний день (+12% у вихідні за лічильником workday) #}
+            {% set is_weekend = is_state('binary_sensor.workday_sensor', 'off') if states('binary_sensor.workday_sensor') != 'unknown' else false %}
+            {% set day_multiplier = 1.12 if is_weekend else 1.0 %}
+
+            {# 7. Фінальний розрахунок та обмеження сатурації (верхня межа: +35% max, нижня: base_load) #}
+            {% set calculated = (raw_predicted + temp_offset) * day_multiplier %}
+            {% set max_limit = blended_cons * 1.35 %}
+            {{ [ [calculated, base_load] | max, max_limit ] | min | round(2) }}
+          {% else %}
+            {# Фоллбек, якщо немає збереженої тижневої статистики #}
+            {{ c_7d_avg | round(2) }}
+          {% endif %}
+        attributes:
+          calculated_at: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+          volcast_forecast_kwh: "{{ states('sensor.volcast_solar_forecast_energy_forecast_today') }}"
+          base_load_kwh: >
+            {% set c_7d_avg = states('sensor.house_daily_energy_7d_avg') | float(0) %}
+            {% set c_7d_min = states('sensor.house_daily_energy_7d_min') | float(c_7d_avg * 0.4) %}
+            {{ [c_7d_min, c_7d_avg * 0.3] | max | round(2) }}
