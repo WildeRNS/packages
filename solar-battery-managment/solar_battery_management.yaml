@@ -7,20 +7,23 @@
 # 1. ВІРТУАЛЬНІ НАЛАШТУВАННЯ ТА ПЕРЕМИКАЧІ (INPUTS)
 # ------------------------------------------------------------------------------
 input_boolean:
+  # Головний прапор-дозвіл на використання мережі 220В для підзарядки АКБ
   allow_grid_charge:
     name: "Дозвіл заряджання від мережі"
     icon: mdi:power-plug-battery
 
 input_number:
+  # Мінімальний незнижувальний резерв ємності АКБ у кВт·год
   min_target_reserve_kwh:
     name: "Мінімальний резерв АКБ (підстраховка)"
     min: 1.0
     max: 20.0
     step: 0.5
     initial: 4.0
-    unit_of_measurement: "кВт·год"
+    unit_of_measurement: "kWh"
     icon: mdi:battery-lock
 
+  # Обмеження струму заряду від мережі (A), що передається інвертору
   max_ac_charge_current:
     name: "Струм зарядки від мережі"
     min: 2
@@ -35,12 +38,14 @@ input_number:
 # ------------------------------------------------------------------------------
 template:
   - trigger:
+      # Щоденний перерахунок середньодобового споживання о 23:59 за формулою EMA
       - platform: time
         at: "23:59:00"
     sensor:
+      # Розрахунок середнього споживання будинку (Експоненційне ковзне середнє)
       - name: "House Average Daily Energy"
         unique_id: house_average_daily_energy
-        unit_of_measurement: "кВт·год"
+        unit_of_measurement: "kWh"
         state_class: measurement
         device_class: energy
         icon: mdi:calculator
@@ -56,9 +61,10 @@ template:
           {% endif %}
 
   - sensor:
+      # Динамічний розрахунок цільового резерву АКБ з урахуванням сезонності
       - name: "Calculated Target Reserve kWh"
         unique_id: calculated_target_reserve_kwh
-        unit_of_measurement: "кВт·год"
+        unit_of_measurement: "kWh"
         device_class: energy
         state_class: measurement
         icon: mdi:battery-charging-high
@@ -72,9 +78,10 @@ template:
           {% set raw_target = daily_avg * ratio %}
           {{ [ [raw_target, min_reserve] | max, max_usable_reserve ] | min | round(2) }}
 
+      # Повна ємність АКБ у кВт·год (Ah * V / 1000)
       - name: "BMS Battery Full Capacity kWh"
         unique_id: bms_battery_full_capacity_kwh
-        unit_of_measurement: "кВт·год"
+        unit_of_measurement: "kWh"
         device_class: energy
         state_class: measurement
         state: >
@@ -82,9 +89,10 @@ template:
           {% set v = states('sensor.bms_battery_total_voltage') | float(0) %}
           {{ ((ah * v) / 1000) | round(2) }}
 
+      # Залишкова ємність АКБ у кВт·год (Ah * V / 1000)
       - name: "BMS Battery Remaining kWh"
         unique_id: bms_battery_remaining_kwh
-        unit_of_measurement: "кВт·год"
+        unit_of_measurement: "kWh"
         device_class: energy
         state_class: measurement
         state: >
@@ -92,6 +100,7 @@ template:
           {% set v = states('sensor.bms_battery_total_voltage') | float(0) %}
           {{ ((ah * v) / 1000) | round(2) }}
 
+      # Математично розрахований відсоток заряду (SOC) для дублювання BMS
       - name: "BMS Battery SOC Calculated"
         unique_id: bms_battery_soc_calculated
         unit_of_measurement: "%"
@@ -106,9 +115,10 @@ template:
             0
           {% endif %}
 
+      # Дефіцит енергії АКБ до досягнення цільового резерву з урахуванням сонячного прогнозу
       - name: "Battery Energy Deficit"
         unique_id: battery_energy_deficit
-        unit_of_measurement: "кВт·год"
+        unit_of_measurement: "kWh"
         state_class: measurement
         icon: mdi:battery-alert
         state: >
@@ -119,6 +129,7 @@ template:
           {{ [deficit, 0] | max | round(2) }}
 
   - binary_sensor:
+      # Бінарний сенсор опалювального сезону (жовтень - квітень)
       - name: "Heating Season"
         unique_id: heating_season
         icon: mdi:radiator
@@ -126,6 +137,7 @@ template:
           {% set m = now().month %}
           {{ m >= 10 or m <= 4 }}
 
+      # Бінарний сенсор вікна нічного тарифу (23:00 - 07:00)
       - name: "Night Tariff Window"
         unique_id: night_tariff_window
         icon: mdi:weather-night
@@ -133,6 +145,7 @@ template:
           {% set h = now().hour %}
           {{ h >= 23 or h < 7 }}
 
+      # Ознака наявності суттєвого дефіциту запасу енергії (> 0.3 kWh)
       - name: "Battery Deficit Active"
         unique_id: battery_deficit_active
         icon: mdi:battery-minus
@@ -143,10 +156,12 @@ template:
 # 3. СКРИПТИ ВИКОНАННЯ ДІЙ З ДВОСТОРОННІМИ СПОВІЩЕННЯМИ (SCRIPTS)
 # ------------------------------------------------------------------------------
 script:
+  # Переключення живлення будинку на міську мережу (PV-Utility-Battery) з затримками
   switch_to_grid_bypass:
     alias: "[Anenji] Переключення виходу на МЕРЕЖУ (з затримкою реле)"
     mode: single
     sequence:
+      # Перевірка: якщо вихід вже на мережі і реле увімкнено — вихід без дій
       - if:
           - condition: template
             value_template: >
@@ -156,22 +171,27 @@ script:
         then:
           - stop: "Вихід вже у режимі PV-Utility-Battery та DIN-реле увімкнено."
 
+      # Крок 1: Подача напруги 220В на вхід інвертора AC IN
       - action: switch.turn_on
         target:
           entity_id: switch.invertor_220_in
 
+      # Пауза 30 секунд для стабілізації вхідної мережі
       - delay:
           seconds: 30
 
+      # Крок 2: Зміна пріоритету виходу інвертора на мережу
       - action: select.select_option
         target:
           entity_id: select.anenji_anj_11kw_48v_wifi_p_output_source_priority
         data:
           option: "PV-Utility-Battery"
 
+      # Пауза 30 секунд для виконання перемикання інвертором
       - delay:
           seconds: 30
 
+      # Перевірка фактичного виконання команди та відправка сповіщення
       - if:
           - condition: template
             value_template: >
@@ -187,10 +207,12 @@ script:
               title: "✅ Успішне переключення на МЕРЕЖУ"
               message: "Вихід інвертора успішно переключено на 'PV-Utility-Battery'. DIN-реле увімкнено (SOC: {{ states('sensor.bms_battery_state_of_charge') }}%)."
 
+  # Переключення живлення будинку на АКБ/СЕС (PV-Battery-Utility)
   switch_to_solar_bypass:
     alias: "[Anenji] Переключення виходу на СОНЦЕ/АКБ (з затримкою реле)"
     mode: single
     sequence:
+      # Перевірка: якщо вихід вже на АКБ/СЕС, вимикаємо реле (за потреби) без зайвих повідомлень
       - if:
           - condition: template
             value_template: >
@@ -210,15 +232,18 @@ script:
                   entity_id: switch.invertor_220_in
           - stop: "Вихід інвертора вже у режимі PV-Battery-Utility, додаткові дії та сповіщення не потрібні."
 
+      # Крок 1: Зміна пріоритету виходу інвертора на АКБ/СЕС
       - action: select.select_option
         target:
           entity_id: select.anenji_anj_11kw_48v_wifi_p_output_source_priority
         data:
           option: "PV-Battery-Utility"
 
+      # Затримка для стабілізації роботи
       - delay:
           seconds: 30
 
+      # Крок 2: Відключення вхідного реле, якщо не проводиться заряд від мережі
       - if:
           - condition: template
             value_template: >
@@ -231,6 +256,7 @@ script:
       - delay:
           seconds: 30
 
+      # Контрольна перевірка та сповіщення користувача
       - if:
           - condition: template
             value_template: >
@@ -246,19 +272,23 @@ script:
               title: "✅ Успішне повернення на СОНЦЕ/АКБ"
               message: "Вихід інвертора переключено на 'PV-Battery-Utility'. DIN-реле вимкнено (SOC: {{ states('sensor.bms_battery_state_of_charge') }}%)."
 
+  # Запуск примусового/планового заряду АКБ від мережі
   start_grid_charge:
     alias: "[Anenji] Запуск зарядки АКБ від мережі"
     icon: mdi:battery-charging-100
     sequence:
+      # Подача 220В на вхід інвертора
       - action: switch.turn_on
         target:
           entity_id: switch.invertor_220_in
 
+      # Очікування появи напруги в мережі (до 30 сек)
       - wait_template: >
           {{ states('sensor.anenji_anj_11kw_48v_wifi_p_grid_voltage') | float(0) > 180 }}
         timeout: "00:00:30"
         continue_on_timeout: true
 
+      # Перевірка на випадок відсутності напруги (Блекаут)
       - if:
           - condition: template
             value_template: >
@@ -273,6 +303,7 @@ script:
               entity_id: switch.invertor_220_in
           - stop: "Міська мережа відсутня"
 
+      # Налаштування пріоритету зарядки та обмеження струму
       - action: select.select_option
         target:
           entity_id: select.anenji_anj_11kw_48v_wifi_p_charge_source_priority
@@ -288,6 +319,7 @@ script:
       - delay:
           seconds: 30
 
+      # Фіксація результату
       - if:
           - condition: template
             value_template: >
@@ -303,11 +335,13 @@ script:
               title: "🔌 Успішно розпочато зарядку від мережі"
               message: "Пріоритет зарядки встановлено на 'PV Priority', струм заряду: {{ states('input_number.max_ac_charge_current') }}A."
 
+  # Безпечна зупинка зарядки від мережі
   stop_grid_charge:
     alias: "[Anenji] Зупинка зарядки АКБ від мережі"
     icon: mdi:battery-charging-off
     mode: single
     sequence:
+      # Якщо вже в режимі PV Only і реле вимкнено — пропускаємо
       - if:
           - condition: template
             value_template: >
@@ -315,6 +349,7 @@ script:
         then:
           - stop: "Інвертор вже у режимі PV Only та DIN-реле вимкнено. Зайві команди не надсилалися."
 
+      # Вимкнення DIN-реле
       - action: switch.turn_off
         target:
           entity_id: switch.invertor_220_in
@@ -322,6 +357,7 @@ script:
       - delay:
           seconds: 5
 
+      # Переключення джерела заряду виключно на сонячні панелі
       - action: select.select_option
         target:
           entity_id: select.anenji_anj_11kw_48v_wifi_p_charge_source_priority
@@ -331,6 +367,7 @@ script:
       - delay:
           seconds: 5
 
+      # Сповіщення про результати
       - if:
           - condition: template
             value_template: >
@@ -346,6 +383,7 @@ script:
               title: "⚠️ Зауваження при зупинці зарядки"
               message: "Пріоритет зарядки або стан DIN-реле потребують додаткової перевірки."
 
+  # Встановлення максимального струму сонячного заряду з підтвердженням від інвертора
   set_solar_charge_current:
     alias: "[Anenji] Встановлення струму заряду СЕС з підтвердженням"
     mode: queued
@@ -356,6 +394,7 @@ script:
         data:
           value: "{{ target_current }}"
 
+      # Очікування оновлення значення в Modbus
       - wait_template: >
           {{ states('number.anenji_anj_11kw_48v_wifi_p_max_charge_current') | int(0) == target_current | int(0) }}
         timeout: "00:00:30"
@@ -368,7 +407,7 @@ script:
           - action: persistent_notification.create
             data:
               title: "✅ Струм заряду Anenji змінено"
-              message: "Успішно встановлено струм {{ target_current }}А (Прогноз: {{ states('sensor.volcast_solar_forecast_energy_forecast_today') }} кВт·год, SOC: {{ states('sensor.bms_battery_state_of_charge') }}%)."
+              message: "Успішно встановлено струм {{ target_current }}А (Прогноз: {{ states('sensor.volcast_solar_forecast_energy_forecast_today') }} kWh, SOC: {{ states('sensor.bms_battery_state_of_charge') }}%)."
         else:
           - action: persistent_notification.create
             data:
@@ -379,6 +418,7 @@ script:
 # 4. АВТОМАТИЗАЦІЇ (AUTOMATIONS)
 # ------------------------------------------------------------------------------
 automation:
+  # Динамічна адаптація струму заряду СЕС залежно від SOC (з урахуванням меж 81%-85% 20A, 86%-100% 10A)
   - id: solar_max_charge_current_control
     alias: "Автоматизація: Налаштування струму заряду сонячної системи"
     description: "Змінює number.anenji_anj_11kw_48v_wifi_p_max_charge_current залежно від % SOC, часу доби та залишку прогнозу СЕС."
@@ -419,14 +459,14 @@ automation:
               {% if rem_forecast > 5.0 %}
                 {% if soc <= 70 %} 40
                 {% elif soc <= 80 %} 30
-                {% elif soc <= 90 %} 20
+                {% elif soc <= 85 %} 20
                 {% else %} 10
                 {% endif %}
               {% else %}
                 {% if soc <= 50 %} 50
                 {% elif soc <= 70 %} 40
                 {% elif soc <= 80 %} 30
-                {% elif soc <= 90 %} 20
+                {% elif soc <= 85 %} 20
                 {% else %} 10
                 {% endif %}
               {% endif %}
@@ -443,6 +483,7 @@ automation:
             data:
               target_current: "{{ target_current }}"
 
+  # Автоматичний контроль старту/зупинки заряду від мережі
   - id: solar_battery_grid_charge_logic
     alias: "Автоматизація: Керування зарядом АКБ від мережі"
     description: "Аналіз дефіциту з 15:00, двотарифна логіка, сезонні правила та контроль динамічного цільового резерву"
@@ -471,6 +512,7 @@ automation:
 
     action:
       - choose:
+          # Умови для зупинки зарядки від мережі
           - conditions:
               - condition: or
                 conditions:
@@ -485,6 +527,7 @@ automation:
             sequence:
               - action: script.stop_grid_charge
 
+          # Умови для запуску зарядки від мережі
           - conditions:
               - condition: state
                 entity_id: input_boolean.allow_grid_charge
@@ -505,6 +548,7 @@ automation:
             sequence:
               - action: script.start_grid_charge
 
+  # Захисний байпас навантаження будинку за рівнем SOC АКБ (15% / 25%)
   - id: solar_battery_soc_bypass_logic
     alias: "Автоматизація: Байпас мережі за рівнем SOC (15% / 25%)"
     description: "Перевірка щохвилини та при зміні стану: при SOC < 15% умикає мережу (PV-Utility-Battery), при SOC >= 25% повертає на сонце (PV-Battery-Utility)"
@@ -538,6 +582,7 @@ automation:
 
     action:
       - choose:
+          # Перемикання на мережу при низькому заряді (SOC < 15%)
           - conditions:
               - condition: template
                 value_template: >
@@ -554,6 +599,7 @@ automation:
             sequence:
               - action: script.switch_to_grid_bypass
 
+          # Повернення на сонце/АКБ після достатнього відновлення заряду (SOC >= 25%)
           - conditions:
               - condition: template
                 value_template: >
