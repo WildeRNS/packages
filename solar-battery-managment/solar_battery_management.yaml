@@ -68,6 +68,9 @@ template:
         device_class: energy
         state_class: measurement
         icon: mdi:battery-charging-high
+        # ДОДАНО: Перевірка наявності даних базових сенсорів для уникнення падіння графіка в 0 під час перезавантаження HA
+        availability: >
+          {{ has_value('sensor.bms_battery_full_capacity_kwh') and has_value('sensor.house_average_daily_energy') }}
         state: >
           {% set full_cap = states('sensor.bms_battery_full_capacity_kwh') | float(10.0) %}
           {% set daily_avg = states('sensor.house_average_daily_energy') | float(states('sensor.overal_in_house_avr_daily_energy') | float(10.0)) %}
@@ -84,6 +87,9 @@ template:
         unit_of_measurement: "kWh"
         device_class: energy
         state_class: measurement
+        # ДОДАНО: Блокування розрахунку до моменту отримання даних від інтеграції BMS
+        availability: >
+          {{ has_value('sensor.bms_battery_full_capacity') and has_value('sensor.bms_battery_total_voltage') }}
         state: >
           {% set ah = states('sensor.bms_battery_full_capacity') | float(0) %}
           {% set v = states('sensor.bms_battery_total_voltage') | float(0) %}
@@ -95,6 +101,9 @@ template:
         unit_of_measurement: "kWh"
         device_class: energy
         state_class: measurement
+        # ДОДАНО: Блокування розрахунку до моменту отримання даних від інтеграції BMS
+        availability: >
+          {{ has_value('sensor.bms_battery_remaining_capacity') and has_value('sensor.bms_battery_total_voltage') }}
         state: >
           {% set ah = states('sensor.bms_battery_remaining_capacity') | float(0) %}
           {% set v = states('sensor.bms_battery_total_voltage') | float(0) %}
@@ -106,6 +115,9 @@ template:
         unit_of_measurement: "%"
         device_class: battery
         state_class: measurement
+        # ДОДАНО: Блокування розрахунку до моменту отримання даних від інтеграції BMS
+        availability: >
+          {{ has_value('sensor.bms_battery_remaining_capacity') and has_value('sensor.bms_battery_full_capacity') }}
         state: >
           {% set rem = states('sensor.bms_battery_remaining_capacity') | float(0) %}
           {% set full = states('sensor.bms_battery_full_capacity') | float(1) %}
@@ -121,6 +133,9 @@ template:
         unit_of_measurement: "kWh"
         state_class: measurement
         icon: mdi:battery-alert
+        # ДОДАНО: Блокування розрахунку до отримання всіх складових, включно з прогнозом сонячної генерації
+        availability: >
+          {{ has_value('sensor.calculated_target_reserve_kwh') and has_value('sensor.bms_battery_remaining_kwh') and has_value('sensor.volcast_solar_forecast_solar_forecast_remaining_today') }}
         state: >
           {% set target = states('sensor.calculated_target_reserve_kwh') | float(0) %}
           {% set rem_kwh = states('sensor.bms_battery_remaining_kwh') | float(0) %}
@@ -149,6 +164,9 @@ template:
       - name: "Battery Deficit Active"
         unique_id: battery_deficit_active
         icon: mdi:battery-minus
+        # ДОДАНО: Використання availability основного сенсора дефіциту
+        availability: >
+          {{ has_value('sensor.battery_energy_deficit') }}
         state: >
           {{ states('sensor.battery_energy_deficit') | float(0) > 0.3 }}
 
