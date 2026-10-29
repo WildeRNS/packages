@@ -4,270 +4,494 @@ type: grid
 square: false
 columns: 3
 cards:
-  - type: heading
-    heading: Сонячна станція та АКБ
-  - type: vertical-stack
-    cards:
-      - type: gauge
-        entity: sensor.bms_battery_state_of_charge
-        name: Заряд АКБ (BMS SoC)
-        min: 0
-        max: 100
-        needle: true
-        severity:
-          red: 0
-          yellow: 25
-          green: 50
-      - type: entities
-        title: 🔋 Параметри Акумулятора
-        show_header_toggle: false
-        entities:
-          - entity: sensor.bms_battery_power
-            name: Потужність АКБ
-            secondary_info: last-changed
-          - entity: sensor.bms_battery_current
-            name: Струм АКБ
-            secondary_info: last-changed
-          - entity: sensor.bms_battery_total_voltage
-            name: Напруга АКБ
-            secondary_info: last-changed
-          - entity: sensor.bms_battery_remaining_capacity
-            name: Залишкова ємність (А·год)
-            secondary_info: last-changed
-          - entity: sensor.bms_battery_full_capacity
-            name: Повна ємність (А·год)
-            secondary_info: last-changed
-          - entity: sensor.bms_battery_remaining_kwh
-            name: Залишок енергії (кВт·год)
-            secondary_info: last-changed
-          - entity: sensor.bms_battery_soc_calculated
-            name: Розрахунковий SOC (%)
-            secondary_info: last-changed
-          - entity: sensor.anenji_anj_11kw_48v_wifi_p_max_charge_current
-            secondary_info: last-changed
-  - type: vertical-stack
-    cards:
-      - type: entities
-        title: ☀️ Сонячна станція та Прогноз
-        show_header_toggle: false
-        entities:
-          - entity: sensor.anenji_anj_11kw_48v_wifi_p_pv_power
-            name: Поточна потужність СЕС
-            secondary_info: last-changed
-          - entity: sensor.volcast_solar_forecast_energy_forecast_today
-            name: Прогноз генерації на сьогодні
-            secondary_info: last-changed
-          - entity: sensor.volcast_solar_forecast_solar_forecast_remaining_today
-            name: Залишок прогнозу на сьогодні
-            secondary_info: last-changed
-          - entity: sensor.battery_energy_deficit
-            name: Очікуваний дефіцит енергії (кВт·год)
-            secondary_info: last-changed
-      - type: entities
-        title: ⚡ Мережа та Навантаження
-        show_header_toggle: false
-        entities:
-          - entity: sensor.anenji_anj_11kw_48v_wifi_p_grid_voltage
-            name: Напруга мережі (AC In)
-            secondary_info: last-changed
-          - entity: sensor.1din_relay_main_power
-            name: Потужність споживання будинку
-            secondary_info: last-changed
-          - entity: sensor.1din_relay_main_current
-            name: Струм споживання будинку
-            secondary_info: last-changed
-          - entity: sensor.invertor_220_in_power
-            name: Інвертор 220V In (Потужність)
-            secondary_info: last-changed
-          - entity: sensor.invertor_220_in_current
-            name: Інвертор 220V In (Струм)
-            secondary_info: last-changed
-          - entity: sensor.overal_in_house_avr_daily_energy
-            name: Споживання за сьогодні
-            secondary_info: last-changed
-          - entity: sensor.house_average_daily_energy
-            name: Сер. добове споживання будинку
-            secondary_info: last-changed
-  - type: vertical-stack
-    cards:
-      - type: entities
-        title: ⚙️ Режими та Статуси
-        show_header_toggle: false
-        entities:
-          - entity: input_boolean.allow_grid_charge
-            name: Дозвіл зарядки від мережі
-            secondary_info: last-changed
-          - entity: binary_sensor.heating_season
-            name: Опалювальний сезон
-            secondary_info: last-changed
-          - entity: binary_sensor.night_tariff_window
-            name: Нічний тариф (23:00-07:00)
-            secondary_info: last-changed
-          - entity: binary_sensor.battery_deficit_active
-            name: Активний дефіцит енергії
-            secondary_info: last-changed
-          - entity: select.anenji_anj_11kw_48v_wifi_p_charge_source_priority
-            name: Пріоритет джерела зарядки
-            secondary_info: last-changed
-          - entity: sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority
-            name: Пріоритет виходу інвертора
-            secondary_info: last-changed
-      - type: entities
-        title: 🎛️ Налаштування лімітів
-        show_header_toggle: false
-        entities:
-          - entity: sensor.calculated_target_reserve_kwh
-            name: Розрахований цільовий резерв (кВт·год)
-            secondary_info: last-changed
-          - entity: input_number.min_target_reserve_kwh
-            name: Мін. резерв (ручна підстраховка)
-            secondary_info: last-changed
-          - entity: input_number.max_ac_charge_current
-            name: Макс. струм заряду від мережі (А)
-            secondary_info: last-changed
-          - entity: number.anenji_anj_11kw_48v_wifi_p_max_charge_current
-            name: Загальний макс. струм заряду
-            secondary_info: last-changed
-          - entity: number.anenji_anj_11kw_48v_wifi_p_max_ac_charge_current
-            name: Заданий струм мережі (Anenji)
-            secondary_info: last-changed
+- type: heading
+  heading: Сонячна станція та АКБ
+- type: vertical-stack
+  cards:
+  - type: gauge
+    entity: sensor.bms_battery_state_of_charge
+    name: Заряд АКБ (BMS SoC)
+    min: 0
+    max: 100
+    needle: true
+    severity:
+      red: 0
+      yellow: 25
+      green: 50
+  - type: entities
+    title: 🔋 Параметри Акумулятора
+    show_header_toggle: false
+    entities:
+    - entity: sensor.bms_battery_power
+      name: Потужність АКБ
+      secondary_info: last-changed
+    - entity: sensor.bms_battery_current
+      name: Струм АКБ
+      secondary_info: last-changed
+    - entity: sensor.bms_battery_total_voltage
+      name: Напруга АКБ
+      secondary_info: last-changed
+    - entity: sensor.bms_battery_remaining_capacity
+      name: Залишкова ємність (А·год)
+      secondary_info: last-changed
+    - entity: sensor.bms_battery_full_capacity
+      name: Повна ємність (А·год)
+      secondary_info: last-changed
+    - entity: sensor.bms_battery_remaining_kwh
+      name: Залишок енергії (кВт·год)
+      secondary_info: last-changed
+    - entity: sensor.bms_battery_full_capacity_kwh
+      name: Повна ємність (кВт·год)
+      secondary_info: last-changed
+    - entity: sensor.bms_battery_soc_calculated
+      name: Розрахунковий SOC (%)
+      secondary_info: last-changed
+    - entity: number.anenji_anj_11kw_48v_wifi_p_max_charge_current
+      name: Загальний струм заряду (Anenji)
+      secondary_info: last-changed
+  - type: entities
+    title: 🕹️ Ручне перемикання та AI
+    show_header_toggle: false
+    entities:
+    - entity: script.switch_to_solar_bypass
+      name: ☀️ Перемкнути на СОНЦЕ/АКБ
+      icon: mdi:white-balance-sunny
+    - entity: script.switch_to_grid_bypass
+      name: 🔌 Перемкнути на МЕРЕЖУ
+      icon: mdi:transmission-tower
+    - entity: script.jev_evaluate_output_mode
+      name: 🧠 Запустити AI-оцінку Jev зараз
+      icon: mdi:brain
+- type: vertical-stack
+  cards:
+  - type: entities
+    title: ☀️ Сонячна станція та Прогноз
+    show_header_toggle: false
+    entities:
+    - entity: sensor.anenji_anj_11kw_48v_wifi_p_pv_power
+      name: Поточна потужність СЕС
+      secondary_info: last-changed
+    - entity: sensor.volcast_solar_forecast_energy_forecast_today
+      name: Прогноз генерації на сьогодні
+      secondary_info: last-changed
+    - entity: sensor.volcast_solar_forecast_solar_forecast_remaining_today
+      name: Залишок прогнозу на сьогодні
+      secondary_info: last-changed
+    - entity: sensor.volcast_solar_forecast_energy_forecast_tomorrow
+      name: Прогноз генерації на завтра
+      secondary_info: last-changed
+    - entity: sensor.battery_energy_deficit
+      name: Дефіцит енергії (сьогодні)
+      secondary_info: last-changed
+    - entity: sensor.tomorrow_energy_deficit
+      name: Прогнозований дефіцит на завтра
+      secondary_info: last-changed
+    - entity: sensor.today_solar_shortfall_kwh
+      name: Нестача генерації на залишок сьогодні
+      secondary_info: last-changed
+  - type: entities
+    title: ⚡ Мережа та Навантаження
+    show_header_toggle: false
+    entities:
+    - entity: switch.invertor_220_in
+      name: 🔌 DIN-реле мережі (ввід 220V)
+      secondary_info: last-changed
+    - entity: input_boolean.auto_control_din_relay
+      name: ⚙️ Автоматичний контроль DIN-реле
+      secondary_info: last-changed
+    - entity: sensor.anenji_anj_11kw_48v_wifi_p_grid_voltage
+      name: Напруга мережі (AC In, лише інформаційно)
+      secondary_info: last-changed
+    - entity: sensor.1din_relay_main_power
+      name: Потужність споживання будинку
+      secondary_info: last-changed
+    - entity: sensor.1din_relay_main_current
+      name: Струм споживання будинку
+      secondary_info: last-changed
+    - entity: sensor.invertor_220_in_power
+      name: Інвертор 220V In (Потужність)
+      secondary_info: last-changed
+    - entity: sensor.invertor_220_in_current
+      name: Інвертор 220V In (Струм)
+      secondary_info: last-changed
+    - entity: sensor.overal_in_house_avr_daily_energy
+      name: Споживання за сьогодні
+      secondary_info: last-changed
+    - entity: sensor.house_average_daily_energy
+      name: Сер. добове споживання будинку
+      secondary_info: last-changed
+  - type: entities
+    title: 🎚️ Пороги гістерезису заряду СЕС
+    show_header_toggle: false
+    entities:
+    - entity: input_number.solar_charge_soc_low
+      name: 'SOC поріг: 40А → 20А (за замовчуванням 70%)'
+      secondary_info: last-changed
+    - entity: input_number.solar_charge_soc_mid
+      name: 'SOC поріг: 20А → 10А (за замовчуванням 85%)'
+      secondary_info: last-changed
+    - entity: input_number.solar_charge_current_high
+      name: Струм 0–70% SOC
+      secondary_info: last-changed
+    - entity: input_number.solar_charge_current_mid
+      name: Струм 71–85% SOC
+      secondary_info: last-changed
+    - entity: input_number.solar_charge_current_low
+      name: Струм 86–100% SOC
+      secondary_info: last-changed
+    - entity: input_number.solar_charge_current_night
+      name: Струм у нічному режимі (поза 06:00–21:00)
+      secondary_info: last-changed
+- type: entities
+  title: ⚙️ Режими та Статуси
+  show_header_toggle: false
+  entities:
+  - entity: input_boolean.package_automations_enabled
+    name: '⛔ Пакет: Усі автоматизації (головний вимикач)'
+    secondary_info: last-changed
+  - entity: input_boolean.auto_control_din_relay
+    name: ⚡ Автоматичний контроль DIN-реле
+    secondary_info: last-changed
+  - entity: input_boolean.auto_day_night
+    name: ☀️🌙 Авто День/Ніч (вимикач логіки день/ніч)
+    secondary_info: last-changed
+  - entity: input_boolean.use_jev_ai
+    name: 🧠 AI-керування день/ніч (Jev)
+    secondary_info: last-changed
+  - entity: input_text.jev_last_decision
+    name: '🤖 Jev AI: Останнє рішення'
+    secondary_info: last-changed
+  - entity: input_boolean.allow_grid_charge
+    name: 🔋 Дозвіл зарядки від мережі (вимикач заряду)
+    secondary_info: last-changed
+  - entity: input_boolean.blackout_saving_mode
+    name: 🚨 Режим Блекаут/Економія АКБ
+    secondary_info: last-changed
+  - entity: input_boolean.max_solar_battery_mode
+    name: 🔆 Режим Максимум Сонця/АКБ
+    secondary_info: last-changed
+  - entity: input_boolean.max_battery_mode
+    name: 🔋 Режим Максимум АКБ
+    secondary_info: last-changed
+  - entity: sensor.max_battery_status
+    name: 📊 Статус Максимум АКБ
+    secondary_info: last-changed
+  - entity: binary_sensor.aggressive_solar_mode
+    name: '[Діагностика] Агресивний режим активний'
+    secondary_info: last-changed
+  - entity: input_text.output_mode_reason
+    name: 📋 Причина поточного режиму
+    secondary_info: last-changed
+  - entity: sensor.time_in_current_output_mode
+    name: ⏱️ Тривалість поточного режиму
+    secondary_info: last-changed
+  - entity: sensor.next_scheduled_mode_check
+    name: ⏰ Наступна запланована перевірка
+    secondary_info: last-changed
+  - entity: sensor.estimated_solar_mode_remaining
+    name: '📉 Оцінка: скільки ще протримається сонце'
+    secondary_info: last-changed
+  - entity: input_boolean.output_on_grid
+    name: '[Внутрішній] Вихід зараз: мережа'
+    secondary_info: last-changed
+  - entity: binary_sensor.heating_season
+    name: Опалювальний сезон
+    secondary_info: last-changed
+  - entity: binary_sensor.night_tariff_window
+    name: Нічний тариф (23:00-07:00)
+    secondary_info: last-changed
+  - entity: binary_sensor.battery_deficit_active
+    name: Активний дефіцит енергії (сьогодні)
+    secondary_info: last-changed
+  - entity: binary_sensor.tomorrow_deficit_active
+    name: Очікується дефіцит завтра
+    secondary_info: last-changed
+  - entity: binary_sensor.today_solar_insufficient
+    name: Сьогодні сонця не вистачить (діагностика)
+    secondary_info: last-changed
+  - entity: binary_sensor.system_ready_for_automation
+    name: Система готова (дані свіжі, зв'язок стабільний)
+    secondary_info: last-changed
+  - entity: select.anenji_anj_11kw_48v_wifi_p_charge_source_priority
+    name: Пріоритет джерела зарядки
+    secondary_info: last-changed
+  - entity: sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority
+    name: Пріоритет виходу інвертора
+    secondary_info: last-changed
+- type: horizontal-stack
+  cards:
   - type: custom:statistics-graph-chart-card
+    tooltip_match_axis: false
+    tooltip_order: default
+    height: 230
+    x_grid_style: dashed
+    y_grid_style: dashed
+    entities:
+    - entity: sensor.anenji_anj_11kw_48v_wifi_p_pv_power
+      name: Сонячна генерація
+    - entity: sensor.bms_battery_power
+      name: Потужність АКБ
+    - entity: sensor.1din_relay_main_power
+      name: Споживання мережі
     title: Моніторинг генерації та енергопотоків
-    entities:
-      - entity: sensor.anenji_anj_11kw_48v_wifi_p_pv_power
-        name: Сонячна генерація
-      - entity: sensor.bms_battery_power
-        name: Потужність АКБ
-      - entity: sensor.1din_relay_main_power
-        name: Споживання мережі
     days_to_show: 1
     period: hour
     stat_types:
-      - mean
+    - mean
     chart_type: line
   - type: custom:statistics-graph-chart-card
+    tooltip_match_axis: false
+    tooltip_order: default
+    height: auto
+    x_grid_style: dashed
+    y_grid_style: dashed
+    entities:
+    - entity: sensor.bms_battery_remaining_kwh
+      name: Залишок в АКБ
+    - entity: sensor.calculated_target_reserve_kwh
+      name: Цільовий резерв
+    - entity: sensor.battery_energy_deficit
+      name: Дефіцит енергії (сьогодні)
+    - entity: sensor.tomorrow_energy_deficit
+      name: Дефіцит на завтра
     title: 🔋 Баланс резерву та дефіциту АКБ
-    entities:
-      - entity: sensor.bms_battery_remaining_kwh
-        name: Залишок в АКБ
-      - entity: sensor.calculated_target_reserve_kwh
-        name: Цільовий резерв
-      - entity: sensor.battery_energy_deficit
-        name: Дефіцит енергії
     days_to_show: 1
     period: hour
     stat_types:
-      - mean
+    - mean
     chart_type: line
   - type: custom:statistics-graph-chart-card
-    title: 📊 Динаміка споживання будинку
+    tooltip_match_axis: false
+    tooltip_order: default
+    height: 265
+    x_grid_style: dashed
+    y_grid_style: dashed
     entities:
-      - entity: sensor.overal_in_house_avr_daily_energy
-        name: Споживання за день
-      - entity: sensor.house_average_daily_energy
-        name: Сер. добове споживання
+    - entity: sensor.overal_in_house_avr_daily_energy
+      name: Споживання за день
+    - entity: sensor.house_average_daily_energy
+      name: Сер. добове споживання
+    title: 📊 Динаміка споживання будинку
     days_to_show: 7
     period: day
     stat_types:
-      - max
+    - max
     chart_type: bar
-  - type: markdown
-    title: ⚙️ Логіка керування СЕС та АКБ
-    content: >
-      ☀️ **1. Динамічне налаштування струму заряду СЕС**
-
-
-      *Автоматизація працює тільки у режимі пріоритету виходу
-      `PV-Battery-Utility`. Струм автоматично адаптується під залишок прогнозу
-      генерації до кінця дня (`solar_forecast_remaining_today`).*
-
-
-      | Час / Залишок прогнозу | Рівень SOC | Струм заряду | Опис режиму |
-
-      | :--- | :--- | :--- | :--- |
-
-      | **06:00–21:00** *(Залишок > 5 кВт·год)* | 1% – 70% | **40 A** |
-      Обмеження при достатньому залишку сонця |
-
-      | | 71% – 80% | **30 A** | Дозаряд перед насиченням |
-
-      | | 81% – 90% | **20 A** | Помірний дозаряд |
-
-      | | 91% – 100% | **10 A** | Крапельний заряд (Float) |
-
-      | **06:00–21:00** *(Залишок ≤ 5 кВт·год)* | 1% – 50% | **50 A** |
-      Максимальний прискорений заряд (до заходу) |
-
-      | | 51% – 70% | **40 A** | Помірний заряд |
-
-      | | 71% – 80% | **30 A** | Дозаряд перед насиченням |
-
-      | | 81% – 90% | **20 A** | Помірний дозаряд |
-
-      | | 91% – 100% | **10 A** | Крапельний заряд (Float) |
-
-      | **21:00–06:00** *(Вечір / Ніч)* | Будь-який | **30 A** | Фіксований
-      нічний режим |
-
-
-      ---
-
-
-      ### 🛡️ 2. Захист від глибокого розряду та байпас мережі
-
-
-      *Перевірка виконується кожні 5 хвилин або миттєво при перетині порогів
-      SOC.*
-
-
-      * **📉 SOC < 15% (Глибокий розряд):**
-        1. Умикається DIN-реле міської мережі (`switch.invertor_220_in`).
-        2. Затримка **30 секунд** (для стабілізації напруги).
-        3. Пріоритет виходу перемикається на `PV-Utility-Battery` (будинок живиться від мережі).
-        4. Надсилається сповіщення `Persistent Notification`.
-
-      * **📈 SOC ≥ 25% (Відновлення заряду):**
-        1. Пріоритет виходу повертається на `PV-Battery-Utility` (будинок живиться від сонця/АКБ).
-        2. Затримка **30 секунд**.
-        3. Вимикається DIN-реле міської мережі.
-        4. Надсилається сповіщення `Persistent Notification`.
-
-      ---
-
-
-      ### 🔌 3. Нічний заряд від мережі за цільовим резервом
-
-
-      * **🌙 Нічний тариф:** 23:00 – 07:00.
-
-      * **❄️ Опалювальний сезон (Жовтень – Квітень):** Цільовий резерв АКБ =
-      **60%** від середньодобового споживання.
-
-      * **☀️ Літній сезон (Травень – Вересень):** Цільовий резерв АКБ = **35%**
-      від середньодобового споживання.
-
-      * **Умови запуску зарядки (з 23:00):**
-        * Перемикач *"Дозвіл заряджання від мережі"* у стані **ON**.
-        * Прогноз сонячної генерації на завтра **≤ 10 кВт·год**.
-        * Поточний залишок у кВт·год менший за розрахований цільовий резерв (або критичний SOC < 15%).
-
-      ---
-
-
-      ### 🔔 4. Контроль та підтвердження дій
-
-
-      * **Захист від дублювання:** перед відправкою команд скрипт перевіряє
-      поточний стан інвертора та DIN-реле. Якщо пристрої вже перебувають у
-      потрібній позиції, виконання зупиняється без повторного надсилання команд
-      і сповіщень.
-
-      * Кожна зміна параметрів перевіряється після виконання команди інвертору.
-
-      * При успішному виконанні у системі створюється зелене сповіщення **`✅`**.
-
-      * У разі збою зв'язку або невиконання команди надсилається аварійне
-      сповіщення **`❌`** або **`⚠️`**.
-    grid_options:
-      columns: full
+  grid_options:
+    columns: full
+- type: entities
+  title: 🎛️ Налаштування лімітів та Резерву
+  show_header_toggle: false
+  entities:
+  - entity: sensor.calculated_target_reserve_kwh
+    name: Цільовий резерв АКБ (кВт·год)
+    secondary_info: last-changed
+  - type: attribute
+    entity: sensor.calculated_target_reserve_kwh
+    attribute: calculation_mode
+    name: Режим розрахунку резерву
+    icon: mdi:tune-variant
+  - type: attribute
+    entity: sensor.calculated_target_reserve_kwh
+    attribute: target_soc_pct
+    name: Резерв у % ємності АКБ
+    icon: mdi:battery-lock
+  - entity: input_number.min_target_reserve_kwh
+    name: Мінімальний резерв АКБ (підстраховка)
+    secondary_info: last-changed
+  - entity: input_number.morning_battery_remaining
+    name: Цільовий залишок АКБ на ранок (%)
+    secondary_info: last-changed
+  - entity: input_number.bad_weather_solar_threshold_kwh
+    name: Поріг негоди для Jev AI (денний прогноз, кВт·год)
+    secondary_info: last-changed
+  - entity: input_number.blackout_reserve_kwh
+    name: Резерв АКБ (Блекаут / Максимум АКБ)
+    secondary_info: last-changed
+  - entity: input_number.max_ac_charge_current
+    name: Макс. струм заряду від мережі (А)
+    secondary_info: last-changed
+  - entity: input_number.evening_switch_deficit_threshold_kwh
+    name: Поріг вечірнього перемикання (кВт·год)
+    secondary_info: last-changed
+  - entity: input_number.significant_deficit_threshold_kwh
+    name: Поріг суттєвого дефіциту (мертва зона)
+    secondary_info: last-changed
+  - entity: input_number.solar_forecast_calibration_factor
+    name: Калібрування прогнозу генерації (×)
+    secondary_info: last-changed
+  - entity: number.anenji_anj_11kw_48v_wifi_p_max_ac_charge_current
+    name: Заданий струм мережі (Anenji)
+    secondary_info: last-changed
+  - entity: input_number.daily_energy_avg_kwh
+    name: '[Внутрішній] Персистентний буфер EMA споживання'
+    secondary_info: last-changed
+- type: markdown
+  title: ⚙️ Логіка керування СЕС та АКБ
+  content: "\U0001F50C **0. DIN-реле мережі (`switch.invertor_220_in`) та Автоматичний контроль**\n\n*Це реле ніколи не вимикається\
+    \ автоматикою пакета — тільки вмикається за потреби. Керування цим процесом визначається перемикачем `input_boolean.auto_control_din_relay`\
+    \ («Автоматичний контроль DIN-реле»). Коли перемикач УВІМКНЕНО (ON) — діє автоматизація-вартовий, яка через 20 секунд\
+    \ автоматично повертає реле в стан ON при випадковому чи аварійному вимкненні, а скрипти забезпечують його увімкнення\
+    \ перед використанням мережі. Коли перемикач ВИМКНЕНО (OFF) — авто-відновлення призупиняється, і реле перебуває під виключно\
+    \ ручним керуванням користувача.*\n\n\U0001F6E1️ **Захист після рестарту HA:** `binary_sensor.system_ready_for_automation`\
+    \ (свіжість SOC + стабільність зв'язку) тепер перевіряється у ВСІХ ключових автоматизаціях пакета (аварійний байпас, вечірнє/ранкове\
+    \ перемикання, заряд від мережі, струм СЕС) — жодна з них не діє на застарілих даних одразу після перезапуску HA.\n\n\U0001F39B\
+    ️ **Перемикачі керування пакетом:**\n\n| Перемикач | Що робить |\n| :--- | :--- |\n| ⛔ **Пакет: Усі автоматизації** |\
+    \ Головний вимикач. OFF = жодна автоматизація пакета не працює, включно з аварійним байпасом SOC<15% і нічним зарядом.\
+    \ Сенсори при цьому \"заморожуються\" на останньому значенні й не оновлюються, доки вимикач не увімкнено знову. |\n| ☀️\U0001F319\
+    \ **Авто День/Ніч** | Вмикає/вимикає лише «розумну» логіку вечір/ранок (розділ 3 нижче). НЕ впливає на аварійний байпас\
+    \ (він завжди пріоритетний) і НЕ впливає на нічний заряд від мережі. |\n| \U0001F50B **Дозвіл зарядки від мережі** | Вмикає/вимикає\
+    \ лише автоматичний заряд АКБ від мережі (розділ 4). |\n| \U0001F6A8 **Блекаут/Економія АКБ** | Перемикає ціль резерву\
+    \ на окремий слайдер (розділ 5 нижче) і вмикає пріоритет заряджання замість звичайного балансу. Взаємовиключний з «Максимум\
+    \ Сонця/АКБ» — вмикання одного вимикає інший. Для повного ефекту вмикайте РАЗОМ з «Авто День/Ніч». |\n| \U0001F506 **Максимум\
+    \ Сонця/АКБ** | Вмикає агресивну логіку (розділ 3.1 нижче): перемикання на сонце максимально швидко, ігноруючи звичайний\
+    \ розрахований резерв — АКБ може розряджатись нижче нього, але НЕ нижче `input_number.min_target_reserve_kwh` (жорстка\
+    \ підстраховка). Взаємовиключний з «Блекаут/Економія» та «Максимум АКБ». Для повного ефекту вмикайте РАЗОМ з «Авто День/Ніч».\
+    \ |\n| \U0001F50B **Максимум АКБ** | Суб-режим в опалювальний сезон: контролює пріоритетний заряд АКБ до цільового резерву\
+    \ (слайдер «Резерв АКБ (Блекаут / Максимум АКБ)», за замовчуванням 8.0-9.0 кВт·год) до закінчення сонячного дня. За умови\
+    \ прогнозу генерації СЕС на сьогодні менше 2.5 кВт·год система залишається на мережі, запобігаючи розряду АКБ домашніми\
+    \ приладами та циклічним перемиканням. Перехід на СЕС дозволено виключно при прогнозі СЕС на сьогодні ≥ 2.5 кВт·год (та\
+    \ досягненні резерву або потужному профіциті). Увечері зберігає накопичене на мережі. Не використовує заряд від мережі.\
+    \ Взаємовиключний з «Максимум Сонця/АКБ» та «Блекаут/Економія». Працює разом з «Авто День/Ніч». |\n| \U0001F9E0 **AI-керування\
+    \ день/ніч (Jev)** | Вмикає інтелектуальне фазове AI-керування на базі моделі TypeSafe Jev (розділ 3.2): 5 базових точок\
+    \ (07:00, 11:00, 13:00, 17:00, 23:00) + щогодинна оцінка вдень (07:00–19:00) у разі негоди (прогноз < `bad_weather_solar_threshold_kwh`)\
+    \ або вранці (08:00–12:00) якщо система на мережі, для повернення на сонце після заряду АКБ. Оптимізує перемикання під\
+    \ 3 пікових вікна (07-10, 11-13, 17-19) та сезони тарифу. Керує ВИКЛЮЧНО виходом інвертора і НЕ чіпає заряд від мережі.\
+    \ При OFF — діє стандартна детермінована математична логіка. |\n\n\U0001F4CB **Діагностика в реальному часі** (картка\
+    \ «Режими та Статуси»): `input_text.output_mode_reason` — причина поточного режиму виходу, оновлюється при кожному перемиканні\
+    \ (і автоматичному, і ручному); `input_text.jev_last_decision` — останнє рішення моделі Jev AI з часом, фазою, вибором\
+    \ та ключовими аргументами; `sensor.time_in_current_output_mode` — скільки триває поточний режим; `sensor.next_scheduled_mode_check`\
+    \ — час наступної запланованої перевірки (07:00/23:00, реактивні тригери можуть спрацювати раніше); `sensor.estimated_solar_mode_remaining`\
+    \ — оцінка \"скільки ще протримається сонце\" при поточному навантаженні (застосовна лише в опалювальний сезон чи Блекаут\
+    \ — там, де діє страховка по резерву).\n\n\U0001F579️ **Ручне перемикання** (картка «Ручне перемикання» на дашборді) —\
+    \ кнопки безпосередньо запускають `script.switch_to_solar_bypass` і `script.switch_to_grid_bypass` — ті самі скрипти,\
+    \ якими користуються всі автоматизації пакета (перевірка реле, зміна пріоритету, звірка й сповіщення). Якщо «Авто День/Ніч»\
+    \ залишається увімкненим, наступна подія (зміна SOC, 07:00/23:00) може знову переоцінити й переключити автоматично — ручна\
+    \ кнопка не \"заморожує\" вибір назавжди, лише діє негайно, зараз.\n\n⚡ **Ємність АКБ (кВт·год)** рахується як `Ah (з\
+    \ BMS) × 51.2В (номінальна напруга)` — фіксована константа, а не \"жива\" напруга під навантаженням, тож число стабільне.\
+    \ Якщо `sensor.bms_battery_full_capacity` тимчасово недоступний (BMS відключився, рестарт HA) — сенсор тримає останнє\
+    \ відоме значення. Обидва слайдери резерву (звичайний і блекаут-режиму) автоматично обмежуються цією ємністю (макс. фізично\
+    \ 10 кВт·год): якщо виставити забагато, значення саме повернеться назад із поясненням у сповіщенні.\n\n---\n\n☀️ **1.\
+    \ Динамічне налаштування струму заряду СЕС**\n\n*У звичайному режимі працює тільки коли вихід у пріоритеті `PV-Battery-Utility`\
+    \ (живимось від сонця). Струм автоматично адаптується під залишок прогнозу генерації та потребу АКБ у дозаряді — прогноз\
+    \ генерації множиться на «Калібрування прогнозу генерації» (картка лімітів, за замовчуванням ×1.0, підлаштуйте за власними\
+    \ спостереженнями — той самий коефіцієнт впливає і на рішення про перемикання день/ніч). Усі пороги SOC і рівні струму\
+    \ винесені в слайдери картки «\U0001F39A️ Пороги гістерезису заряду СЕС» — значення в таблиці відповідають заводським\
+    \ налаштуванням за замовчуванням.*\n\n| Умова генерації | Рівень SOC | Струм заряду |\n| :--- | :--- | :--- |\n| **Достатньо\
+    \ сонця** *(прогноз ≥ нестача + 1.5 кВт·год)* | 0–70% | **40 A** |\n| | 71–85% | **20 A** |\n| | 86–100% | **10 A** |\n\
+    | **Недостатньо сонця** | 0–85% | **40 A** (прискорений заряд) |\n| | 86–100% | **10 A** |\n| **Поза вікном 06:00–21:00\
+    \ (ніч)** | Будь-який | **30 A** (окремий незалежний параметр) |\n| \U0001F6A8 **Режим Блекаут/Економія (будь-коли)**\
+    \ | 0–95% | **40 A** (максимум, незалежно від вікна дня/ночі) |\n| | 95–100% | **10 A** (тейперинг про безпеку АКБ) |\n\
+    \n*Невеликий буфер гістерезису (±3%) навколо кожної межі — струм не \"смикається\" туди-сюди при коливаннях SOC точно\
+    \ на межі. ⚠️ Це вікно 06:00–21:00 — розклад саме для струму СЕС, і воно НЕ те саме, що нічний тариф мережі (23:00–07:00)\
+    \ у розділі 5 нижче — два незалежних поняття з різними межами. У режимі Блекаут/Економія ця умова виходу ІГНОРУЄТЬСЯ —\
+    \ струм СЕС максимізується незалежно від того, чи будинок живиться від сонця чи від мережі (`charge_source_priority` і\
+    \ `output_source_priority` — незалежні настройки інвертора).*\n\n---\n\n### \U0001F6E1️ 2. Аварійний захист від глибокого\
+    \ розряду (найвищий пріоритет)\n\n*Працює завжди, незалежно від «Авто День/Ніч» — це жорсткий запобіжник. Перевірка виконується\
+    \ кожні 5 хвилин або миттєво при перетині порогів SOC.*\n\n* **\U0001F4C9 SOC < 15%:** переключення пріоритету виходу\
+    \ на `PV-Utility-Battery` (мережа). Напруга мережі більше НЕ перевіряється — інвертор сам коректно живиться з доступного\
+    \ джерела незалежно від встановленого пріоритету.\n* **\U0001F4C8 SOC ≥ 25%:** повернення пріоритету виходу на `PV-Battery-Utility`\
+    \ — але тільки якщо «Авто День/Ніч» **вимкнено** (інакше цим керує розділ 3 нижче, щоб уникнути подвійного керування).\n\
+    \n---\n\n### ☀️\U0001F319 3. «Авто День/Ніч» — розумне вечірнє/ранкове перемикання\n\n*Активно лише коли перемикач «Авто\
+    \ День/Ніч» = **ON**. Ніколи не суперечить аварійному байпасу (розділ 2) чи заряду від мережі (розділ 4). Прогноз генерації\
+    \ скрізь нижче множиться на «Калібрування прогнозу генерації» (за замовчуванням ×1.0).*\n\n* **\U0001F319 Ввечері о 23:00**\
+    \ — якщо прогноз генерації на завтра значно менший за прогнозоване споживання (запас +20% на похибку прогнозу споживання,\
+    \ з урахуванням поточного заряду АКБ понад резерв) — переключення на `PV-Utility-Battery` (мережа).\n* **☀️ Зранку о 7:00**\
+    \ (і будь-коли протягом дня, щойно АКБ дозарядиться) — конкретна умова залежить від активного режиму (розділ 3.1 нижче),\
+    \ але завжди з тим самим захистом: поріг \"готовності\" ніколи не буває нижчим за поріг повернення на мережу (пункт \"\
+    Протягом дня\" нижче) +2% — інакше дві автоматизації \"тягли в різні боки\" щохвилини (саме так виник цикл переключень,\
+    \ коли розрахований резерв виявився вищим за колишню жорстку межу 32%).\n* **\U0001F504 Протягом дня** — динамічне повернення\
+    \ на мережу, якщо АКБ (у режимі сонця) впаде до відповідного порогу — залежно від активного режиму (розділ 3.1 нижче).\n\
+    \n#### 3.1. Три режими \"готовності до сонця\" (яка умова діє зранку/вдень)\n\n| Режим | Умова переходу на сонце (7:00+)\
+    \ | Поріг повернення на мережу |\n| :--- | :--- | :--- |\n| **Звичайний** (обидва перемикачі нижче — OFF) | АКБ > цільового\
+    \ резерву **АБО** > 30% заряду, **І** прогнозу на залишок сьогодні вистачає (**АБО** запас в АКБ > 1 кВт·год понад резерв)\
+    \ | Цільовий розрахований резерв (`sensor.calculated_target_reserve_kwh`) — 30% АКБ (~2.87 кВт·год) взимку / 20% АКБ (~1.91\
+    \ кВт·год) влітку |\n| \U0001F506 **Максимум Сонця/АКБ** | АКБ > `input_number.min_target_reserve_kwh` (простий мінімум-підстраховка,\
+    \ а не повний сезонний резерв) — прогноз і \"чи вистачає сонця\" ІГНОРУЮТЬСЯ повністю | `input_number.min_target_reserve_kwh`\
+    \ (та сама підстраховка — АКБ ніколи не розряджається нижче неї, навіть у цьому режимі) |\n| \U0001F6A8 **Блекаут/Економія\
+    \ АКБ** | АКБ > `input_number.blackout_reserve_kwh` **АБО** сонця сьогодні вистачає з запасом (`today_solar_shortfall_kwh\
+    \ == 0`) | `input_number.blackout_reserve_kwh` (значно вищий за звичайний) |\n\n*«Максимум Сонця/АКБ», «Блекаут/Економія»\
+    \ та «Максимум АКБ» — взаємовиключні (розділ 0 вище). Обидва режими використовують ту саму \"анти-гойдалка\" логіку (+2%\
+    \ запасу між порогом переходу на сонце і порогом повернення на мережу), тож дублювання циклу переключень, як показано\
+    \ вище, у жодному з них не станеться.*\n\n#### 3.2. \U0001F9E0 Фазове AI-керування Jev (5 точок + щогодини в негоду)\n\
+    \n*Активується тумблером «\U0001F9E0 AI-керування день/ніч (Jev)». Модель HA-Jev (TypeSafe AI) керує ВИКЛЮЧНО виходом\
+    \ інвертора (`PV-Battery-Utility` чи `PV-Utility-Battery`) і НЕ має права вмикати заряд від мережі. Система повністю очищена\
+    \ від ненадійних штучних прогнозів споживання — аналіз базується на реальному залишку АКБ над мінімальним резервом, прогнозі\
+    \ генерації Volcast та 3-х пікових вікнах побутового споживання.*\n\n* **⏰ Стратегічні точки та розклад аналізу:**\n \
+    \ 1. **07:00 (Ранок):** Старт пікового вікна 07:00–10:00. Модель оцінює буфер АКБ, щоб замістити дорогий денний тариф\
+    \ міської мережі; денне сонце поверне витрачене в обід.\n  2. **11:00 (Обід):** Старт пікового вікна 11:00–13:00. Суміщення\
+    \ піку навантаження з піком сонячної інсоляції.\n  3. **13:00 (Після обіду):** Завершення обіднього піку. В опалювальний\
+    \ сезон при слабкому сонці безпечно стати на мережу для збереження АКБ на вечір; в неопалювальний — тримати сонце.\n \
+    \ 4. **17:00 (Вечір):** Старт пікового вікна 17:00–19:00. Проходження вечірнього піку на накопиченому заряді АКБ.\n  5.\
+    \ **23:00 (Ніч):** Оцінка збереження заряду АКБ на завтрашній ранок vs робота від батареї вночі.\n  6. **☁️ Щогодинний\
+    \ запуск у негоду (08:00–19:00):** Якщо денний прогноз СЕС нижчий за слайдер `input_number.bad_weather_solar_threshold_kwh`\
+    \ (наприклад, < 5.0 кВт·год), модель викликається щогодини на початку кожної години, гнучко адаптуючись до похмурої погоди.\
+    \ Після 19:00 перевірки припиняються, наступна — штатна нічна о 23:00.\\n  7. **\U0001F305 Ранкове повернення на Сонце\
+    \ (08:00–12:00):** Якщо інвертор на міській мережі (`output_on_grid` = on), модель викликається щогодини вранці. Щойно\
+    \ ранкове сонце підзарядить АКБ вище резерву, система автоматично перейде на сонце, не очікуючи 11:00.\n\n* **❄️ Опалювальний\
+    \ vs ☀️ Неопалювальний сезон:**\n  * *Неопалювальний сезон:* День удвічі дорожчий за ніч — модель надає максимальний пріоритет\
+    \ «Сонцю», доки заряд вище мінімального захисного резерву.\n  * *Опалювальний сезон:* Тариф цілодобово однаковий — пріоритет\
+    \ на 3 пікові вікна (07–10, 11–13, 17–19). Поза ними при хмарності безпечно обирати мережу, щоб зберегти АКБ.\n\n* **\U0001F6E1\
+    ️ Безпека та узгодженість порогів:**\n  * При активному Jev AI денна автоматика повернення на мережу (`solar_auto_daytime_fallback`)\
+    \ використовує захисний поріг `input_number.min_target_reserve_kwh` (зараз 2.5 кВт·год / 26%), тому система не скидається\
+    \ передчасно на мережу в пікові години, доки в батареї є корисний заряд.\n  * Ранковий поріг готовності до Сонця в Jev\
+    \ AI тепер також динамічно вираховується від слайдера `min_target_reserve_kwh` з гістерезисом +4% (зараз 30%). Якщо користувач\
+    \ пересуває слайдер резерву, поріг готовності Jev AI автоматично змінюється синхронно.\n  * Денний захисний фільтр Jev\
+    \ AI: утримує інвертор на Сонці виключно тоді, коли система вже працює на Сонці, і генерація СЕС покриває навантаження\
+    \ або заряд АКБ вище мінімального резерву слайдера. Він ніколи не перемикає систему з Мережі на Сонце всупереч рішенню\
+    \ моделі.\\n            * Якщо API Jev не відповідає (таймаут, відсутність зв'язку) — система не зависає: надсилається\
+    \ сповіщення, і автоматика застосовує захисний фолбек (о 07:00 при АКБ ≥ 32% переходить на сонце за замовчуванням).\n\
+    \  * Апаратні захисти (байпас SOC < 15%) діють безперервно в реальному часі.\n\n\n---\n\n### \U0001F50C 4. Нічний/денний\
+    \ заряд АКБ від мережі\n\n* **\U0001F319 Нічний тариф:** 23:00 – 07:00 (⚠️ інше вікно, ніж розклад СЕС у розділі 1 — див.\
+    \ примітку там).\n* **❄️ Опалювальний сезон (Жовтень – Квітень):** Цільовий резерв АКБ = **30% від повної ємності АКБ**\
+    \ (~2.87 кВт·год при ємності 9.56 кВт·год).\n* **☀️ Літній сезон (Травень – Вересень):** Цільовий резерв АКБ = **20% від\
+    \ повної ємності АКБ** (~1.91 кВт·год).\n* **\U0001F39A️ Нижня планка (підстраховка):** Слайдер `input_number.min_target_reserve_kwh`\
+    \ є гарантованою нижньою межею: якщо ви виставили значення вище за розраховане, система автоматично орієнтується на ваш\
+    \ слайдер.\n* **Умови запуску зарядки (з 23:00):**\n  * Перемикач *\"Дозвіл заряджання від мережі\"* у стані **ON**.\n\
+    \  * Поточний залишок у кВт·год менший за розрахований цільовий резерв мінус 0.5 кВт·год.\n  * І одне з: (а) вночі очікується\
+    \ дефіцит завтра (перевищує «Поріг суттєвого дефіциту»); (б) опалювальний сезон і активний поточний дефіцит; (в) критичний\
+    \ SOC < 15%; (г) \U0001F6A8 **режим Блекаут/Економія і активний поточний дефіцит — БУДЬ-ЯКОЇ пори доби й сезону** (пріоритет\
+    \ заряджання).\n* Заряд безумовно зупиняється о **07:00**, а також миттєво при досягненні цільового резерву. * Напруга\
+    \ мережі більше НЕ перевіряється перед стартом заряду — тим самим принципом, що й для байпасу: інвертор сам впорається.\
+    \ * «Поріг суттєвого дефіциту» (картка лімітів, за замовчуванням 0.3 кВт·год) — спільна «мертва зона» проти шуму округлення\
+    \ прогнозів: без неї дрібні (0.01–0.1 кВт·год) коливання прогнозу постійно смикали б відповідні прапорці дефіциту. Один\
+    \ слайдер керує одразу трьома індикаторами дефіциту на дашборді.\n\n---\n\n### \U0001F6A8 5. Режими «Блекаут/Економія\
+    \ АКБ», \U0001F50B «Максимум АКБ» та \U0001F506 «Максимум Сонця/АКБ»\n\n*Усі три — суто ручні перемикачі, не вмикаються/вимикаються\
+    \ автоматично за сезоном чи погодою, і взаємовиключні між собою (розділ 0 вище). Для повного ефекту вмикайте кожен РАЗОМ\
+    \ з «Авто День/Ніч» (інакше перемикання виходу день/ніч просто не працюватиме, хоча заряд від мережі й струм СЕС працюватимуть\
+    \ незалежно).*\n\n**\U0001F6A8 Блекаут/Економія АКБ** — призначений для холодного періоду з малою генерацією й ризиком\
+    \ відключень мережі: * Цільовий резерв повністю замінюється окремим слайдером («Резерв АКБ (Блекаут / Максимум АКБ)»)\
+    \ замість звичайного сезонного розрахунку — без верхньої межі 85% ємності (це ваше явне число, обмежене лише реальною\
+    \ фізичною ємністю АКБ). * Пріоритетний заряд від мережі будь-якої пори доби (розділ 4 вище), максимальний струм заряду\
+    \ СЕС незалежно від режиму виходу (розділ 1 вище), і суворіша умова переходу на сонце вранці (розділ 3.1 вище).\n**\U0001F50B\
+    \ Максимум АКБ** — призначений для опалювального сезону (однаковий цілодобовий тариф) для пріоритетного накопичення сонячної\
+    \ енергії в АКБ на випадок відключень: * Цільовий резерв задається слайдером `input_number.blackout_reserve_kwh` («Резерв\
+    \ АКБ (Блекаут / Максимум АКБ)», наприклад 9.0 кВт·год) замість загального мінімуму `min_target_reserve_kwh`. * Поріг\
+    \ прогнозу СЕС 2.5 кВт·год: за умови прогнозу генерації СЕС на сьогодні < 2.5 кВт·год система безумовно залишається на\
+    \ мережі, спрямовуючи всю доступну енергію сонця на заряд або підтримку АКБ та уникаючи циклічного смикання інвертора.\
+    \ * Перехід на СЕС дозволено виключно при прогнозі СЕС на сьогодні ≥ 2.5 кВт·год за наявності профіциту (баланс ≥ +1.5\
+    \ кВт·год) або досягненні заданого резерву при активному сонці. * Динамічний траєкторний баланс (`sensor.max_battery_trajectory_balance`):\
+    \ зіставляє залишок сонячного прогнозу до кінця дня зі споживанням дому та дефіцитом енергії до заданого резерву. * Увечері\
+    \ (генерація СЕС < 150 Вт або після 17:00 / захід сонця) або при слабкому прогнозі на день (< 2.5 кВт·год) будинок надійно\
+    \ залишається або перемикається на мережу для збереження накопиченої в АКБ енергії. * Не використовує платний заряд від\
+    \ мережі (тільки безкоштовне сонце).\n\n**\U0001F506 Максимум Сонця/АКБ** — призначений для сонячного періоду, коли денний\
+    \ тариф мережі дорожчий за нічний: * Перемикання на сонце максимально швидко (7:00+), ігноруючи звичайний цільовий резерв\
+    \ — АКБ може розряджатись значно нижче нього, але НЕ нижче `input_number.min_target_reserve_kwh` (розділ 3.1 вище) — це\
+    \ ваша явна вимога, реалізована через повернення `solar_auto_daytime_fallback` до роботи в цьому режимі, просто з іншим\
+    \ (набагато нижчим) порогом.\n**Спільне для режимів:** * Оскільки практично вся логіка пакета (дефіцити, заряд від мережі,\
+    \ ранкове/денне перемикання) спирається саме на цільовий резерв — зміна режиму автоматично впливає на систему в більшості\
+    \ аспектів без додаткового коду. * `input_boolean.allow_grid_charge` і аварійні пороги 15%/25% **не залежать** від жодного\
+    \ з цих режимів — перше залишається окремим дозволом, друге — універсальна межа безпеки АКБ. * Увімкнення/вимкнення кожного\
+    \ супроводжується окремим сповіщенням з поточним активним цільовим резервом.\n\n---\n\n### \U0001F514 6. Контроль та підтвердження\
+    \ дій\n\n* **Захист від дублювання:** перед відправкою команд кожен скрипт перевіряє поточний стан інвертора. Якщо він\
+    \ вже в потрібній позиції, виконання зупиняється без повторних команд і сповіщень.\n* Кожна зміна параметрів перевіряється\
+    \ після виконання команди інвертору — включно зі стартом/зупинкою заряду від мережі та зміною струму заряду СЕС.\n* При\
+    \ успішному виконанні надсилається зелене сповіщення **`✅`** (або тематичне \U0001F506/\U0001F50C).\n* У разі збою зв'язку\
+    \ чи невиконання команди — аварійне сповіщення **`⚠️`**.\n* **\U0001F3F7️ Стандартизоване маркування джерела рішень:**\n\
+    \  * `\U0001F9E0 [Jev AI]` — рішення нейромережі з деталізацією (вибір, фаза, прогноз, АКБ);\n  * `⚙️ [Локальна автоматика]`\
+    \ — спрацювання детермінованих правил пакета;\n  * `\U0001F6A8 [Аварійний захист]` — апаратний захист батареї (SOC < 15%\
+    \ / ≥ 25%);\n  * `\U0001F464 [Вручну]` — дії користувача на дашборді.\n  Усі системні сповіщення про зміну пріоритету\
+    \ виходу інвертора додатково містять рядок:\n  `Ініціатор / Причина: <хто і чому прийняв рішення>`.\n"
+  grid_options:
+    columns: full
 column_span: 4

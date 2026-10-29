@@ -1,124 +1,401 @@
-# ==============================================================================
-# PACKAGE: Комплексне керування інвертором Anenji, зарядом АКБ та байпасом мережі
-# Файл: /config/packages/solar_battery_management.yaml
-# ==============================================================================
+# =====================================================================================
+# ФАЙЛ: solar_battery_management-day-night.yaml
+# =====================================================================================
 
-# ------------------------------------------------------------------------------
-# 1. ВІРТУАЛЬНІ НАЛАШТУВАННЯ ТА ПЕРЕМИКАЧІ (INPUTS)
-# ------------------------------------------------------------------------------
 input_boolean:
-  # Головний прапор-дозвіл на використання мережі 220В для підзарядки АКБ
+  # ⚠️ НАВМИСНО БЕЗ "initial:" У ЖОДНОГО input_boolean/input_number В ЦЬОМУ
+  # ФАЙЛІ. Для YAML-визначених input_* хелперів "initial:" застосовується
+  # ПРИ КОЖНОМУ setup (не лише при першому створенні) — тобто перезаписує
+  # відновлене з БД значення щоразу при рестарті HA, а не лише один раз.
+  # Це непомітно ламало персистентність (наприклад, input_number.daily_energy_avg_kwh
+  # скидався в 0 при кожному перезапуску, хоча мав зберігати EMA). НЕ додавайте
+  # "initial:" сюди знову — усі місця використання цих сутностей у пакеті вже
+  # мають безпечний фолбек через `| float(X)`/`| int(X)` на випадок, якщо
+  # значення ще ніколи не встановлювалось (перший запуск).
+  # ГОЛОВНИЙ ВИМИКАЧ ВСЬОГО ПАКЕТА. Коли вимкнено — АБСОЛЮТНО ВСІ автоматизації
+  # пакета (включно з аварійним байпасом SOC<15% і нічним зарядом) бездіють.
+  # ⚠️ УВАГА: вимкнення цього світча також вимикає аварійний захист від
+  # глибокого розряду — використовуйте для обслуговування/діагностики,
+  # а не залишайте вимкненим постійно.
+  package_automations_enabled:
+    name: "Пакет: Усі автоматизації увімкнено"
+    icon: mdi:power
+
   allow_grid_charge:
     name: "Дозвіл заряджання від мережі"
     icon: mdi:power-plug-battery
 
+  # КЕРУВАННЯ АВТОМАТИКОЮ DIN-РЕЛЕ МЕРЕЖІ:
+  # ON = автоматичне само-відновлення та контроль switch.invertor_220_in активні.
+  # OFF = автоматичний контроль вимкнено, автоматика не вмикає реле сама.
+  auto_control_din_relay:
+    name: "Автоматичний контроль DIN-реле"
+    icon: mdi:electric-switch
+    
+  # ГОЛОВНИЙ ВИМИКАЧ логіки Розумний День/Ніч (вечірнє/ранкове перемикання).
+  # Уся ця логіка виконується ТІЛЬКИ коли цей світч увімкнено.
+  auto_day_night:
+    name: "Авто День/Ніч"
+    icon: mdi:theme-light-dark
+
+  # ВИПРАВЛЕННЯ 3.1 (оновлено): явний, окремий від switch.invertor_220_in
+  # прапорець поточного режиму виходу. switch.invertor_220_in більше ВЗАГАЛІ
+  # не керується автоматикою (лише користувач вручну), тож
+  # не може і не повинен використовуватись як proxy режиму виходу — саме для
+  # цього й існує цей окремий прапорець.
+  # Встановлюється лише скриптами switch_to_grid_bypass / switch_to_solar_bypass.
+  output_on_grid:
+    name: "[Внутрішній] Вихід інвертора зараз у режимі 'мережа спочатку'"
+    icon: mdi:transmission-tower
+
+  # НОВА ФУНКЦІЯ: окремий режим "Блекаут/Економія АКБ". Коли увімкнено —
+  # система переключається на максимальну економію заряду АКБ і пріоритет
+  # заряджання (замість звичайного балансу "максимально використати
+  # сонце+АКБ"). Призначено для холодного періоду з малою генерацією й
+  # ризиком відключень мережі. Суто ручний перемикач — не вмикається/
+  # вимикається автоматично за сезоном чи погодою, лише людиною.
+  # Взаємовиключний з blackout_saving_mode (автоматизація
+  # exclusive_mode_switches нижче стежить, щоб обидва не були on одночасно —
+  # філософії "максимум використання" й "максимум економії" суперечать
+  # одна одній за визначенням).
+  blackout_saving_mode:
+    name: "🚨 Режим Блекаут/Економія АКБ"
+    icon: mdi:battery-alert-variant-outline
+
+  # НОВА ФУНКЦІЯ: ручний перемикач "агресивного" режиму (раніше визначався
+  # автоматично як "не опалювальний сезон і не блекаут" — тепер користувач
+  # керує цим напряму, а не покладається на автоматичну прив'язку до сезону).
+  # Коли увімкнено — система перемикається на сонце практично одразу з
+  # 7:00, ігноруючи звичайний цільовий резерв (заряд АКБ може опускатись
+  # нижче нього) — АЛЕ НЕ нижче input_number.min_target_reserve_kwh, це
+  # жорстка нижня межа навіть у цьому режимі (через
+  # solar_auto_daytime_fallback, яка тепер активна і в цьому режимі теж,
+  # просто з іншим порогом). Взаємовиключний з blackout_saving_mode.
+  max_solar_battery_mode:
+    name: "🔆 Максимум Сонця/АКБ"
+    icon: mdi:weather-sunny-alert
+
+  # НОВА ФУНКЦІЯ: суб-режим "Максимум АКБ" у режимі auto_day_night при опалювальному сезоні.
+  # Мета: до вечора (закінчення сонячної генерації) досягти 100% заряду АКБ, максимально
+  # використовуючи сонце на дім, коли це дозволяє баланс генерації.
+  # Взаємовиключний з blackout_saving_mode та max_solar_battery_mode.
+  max_battery_mode:
+    name: "🔋 Режим Максимум АКБ"
+    icon: mdi:battery-charging-high
+
+  # НОВА ФУНКЦІЯ (Jev AI): увімкнення фазового AI-керування пріоритетом виходу
+  # (Сонце / Мережа) через модель HA-Jev на 5 добових чекпоінтах:
+  # 07:00 (ранок), 11:00 (обід), 13:00 (після обіду), 17:00 (вечір), 23:00 (ніч).
+  # Модель керує ВИКЛЮЧНО output_source_priority і НЕ має доступу до заряду від мережі.
+  # Якщо вимкнено — система працює за стандартною детермінованою логікою.
+  use_jev_ai:
+    name: "🧠 AI-керування день/ніч (Jev)"
+    icon: mdi:brain
+
 input_number:
-  # Мінімальний незнижувальний резерв ємності АКБ у кВт·год
+  # ⚠️ Так само без "initial:" — див. пояснення на початку input_boolean: вище.
   min_target_reserve_kwh:
-    name: "Мінімальний резерв АКБ (підстраховка)"
+    name: "Мінімальний резерв АКБ (підстраховка, звичайний режим)"
     min: 1.0
-    max: 20.0
+    max: 10.0 # ФІЗИЧНА ємність АКБ — 10 кВт·год (уточнено користувачем)
     step: 0.5
-    initial: 4.0
     unit_of_measurement: "kWh"
     icon: mdi:battery-lock
 
-  # Обмеження струму заряду від мережі (A), що передається інвертору
+  # НОВА ФУНКЦІЯ: окремий цільовий резерв для режимів "Блекаут/Економія АКБ"
+  # та "Максимум АКБ" — коли один із них активний, цей слайдер ПОВНІСТЮ заміняє
+  # звичайний сезонний розрахунок резерву (див. sensor.calculated_target_reserve_kwh).
+  blackout_reserve_kwh:
+    name: "Резерв АКБ (Блекаут / Максимум АКБ)"
+    min: 1.0
+    max: 10.0 # та сама фізична межа ємності АКБ
+    step: 0.5
+    unit_of_measurement: "kWh"
+    icon: mdi:battery-heart-variant
+
+  # НОВИЙ СЛАЙДЕР: бажаний цільовий залишок АКБ на ранок (о 07:00) в опалювальний сезон.
+  # ⚠️ Без "initial:" — стан зберігається у базі HA і відновлюється при перезавантаженні.
+  morning_battery_remaining:
+    name: "Цільовий залишок АКБ на ранок (опалювальний сезон)"
+    min: 20
+    max: 80
+    step: 5
+    unit_of_measurement: "%"
+    icon: mdi:battery-clock
+
+  # НОВИЙ СЛАЙДЕР: поріг денного прогнозу СЕС для визначення поганої погоди.
+  # Якщо прогноз нижче цього значення, Jev AI викликається щогодини у денні вікна (07:00-22:00).
+  # ⚠️ Без "initial:" — стан зберігається у базі HA і відновлюється при перезавантаженні.
+  bad_weather_solar_threshold_kwh:
+    name: "Поріг поганої погоди СЕС (денний прогноз)"
+    min: 1.0
+    max: 15.0
+    step: 0.5
+    unit_of_measurement: "kWh"
+    icon: mdi:weather-cloudy
+
   max_ac_charge_current:
     name: "Струм зарядки від мережі"
     min: 2
     max: 15
     step: 1
-    initial: 15
     unit_of_measurement: "A"
     icon: mdi:current-ac
 
-# ------------------------------------------------------------------------------
-# 2. РОЗРАХУНКОВІ ТА ШАБЛОННІ СЕНСОРИ (TEMPLATES)
-# ------------------------------------------------------------------------------
+  # ВИПРАВЛЕННЯ 3.6: персистентний буфер EMA середньодобового споживання.
+  # input_number гарантовано відновлює значення після рестарту HA (на відміну
+  # від trigger-сенсора, що читав власний попередній стан).
+  daily_energy_avg_kwh:
+    name: "[Внутрішній] Персистентне середнє добове споживання"
+    icon: mdi:database-clock
+    min: 0
+    max: 200
+    step: 0.1
+    unit_of_measurement: "kWh"
+
+  # Поріг "значного" дефіциту для вечірнього перемикання на мережу (23:00).
+  # Більший за загальний поріг significant_deficit_threshold_kwh (нижче),
+  # бо тут йдеться про повну зміну режиму виходу на весь наступний день,
+  # а не про підзаряд чи "чи варто перемикатись сьогодні".
+  evening_switch_deficit_threshold_kwh:
+    name: "Поріг значного дефіциту для вечірнього переходу на мережу"
+    min: 0.3
+    max: 10.0
+    step: 0.1
+    unit_of_measurement: "kWh"
+    icon: mdi:battery-alert
+
+  # ВИПРАВЛЕННЯ (п.3 запиту користувача): раніше поріг 0.3 кВт·год ("мертва
+  # зона" проти шуму округлення — див. коментарі біля відповідних
+  # binary_sensor) був захардкоджений однаково в ТРЬОХ місцях
+  # (battery_deficit_active, tomorrow_deficit_active, today_solar_insufficient).
+  # Тепер один спільний параметр — зміна тут одразу впливає на всі три.
+  significant_deficit_threshold_kwh:
+    name: "Поріг суттєвого дефіциту (мертва зона проти шуму)"
+    min: 0.1
+    max: 2.0
+    step: 0.05
+    unit_of_measurement: "kWh"
+    icon: mdi:tune-variant
+
+  # ВИПРАВЛЕННЯ (за спостереженням користувача): раніше до прогнозу генерації
+  # застосовувався жорстко закодований "хаіркат" ×0.8 (припущення, що
+  # Solcast-подібні прогнози частіше ПЕРЕОЦІНЮЮТЬ генерацію). Але за реальними
+  # спостереженнями саме цього сенсора прогноз навпаки частіше ЗАНИЖУЄ
+  # генерацію. Тому хаіркат винесено в окремий калібрувальний коефіцієнт
+  # (за замовчуванням 1.0 — довіряти прогнозу як є, без штучного заниження) —
+  # і його можна підлаштувати з часом за власними спостереженнями, не
+  # редагуючи YAML. Значення <1.0 занижує прогноз (як було раніше), >1.0 —
+  # завищує (компенсація систематичного заниження).
+  solar_forecast_calibration_factor:
+    name: "Калібрування прогнозу генерації СЕС"
+    min: 0.5
+    max: 1.5
+    step: 0.05
+    unit_of_measurement: "×"
+    icon: mdi:weather-partly-cloudy
+
+  # Параметризація гістерезису струму заряду СЕС (розділ 4 аналізу) —
+  # раніше пороги 70/85/95% і струми 40/30/10А були "зашиті" в шаблон.
+  solar_charge_soc_low:
+    name: "Струм заряду СЕС: поріг SOC 'низький'"
+    min: 20
+    max: 90
+    step: 1
+    unit_of_measurement: "%"
+    icon: mdi:battery-20
+
+  solar_charge_soc_mid:
+    name: "Струм заряду СЕС: поріг SOC 'середній'"
+    min: 50
+    max: 98
+    step: 1
+    unit_of_measurement: "%"
+    icon: mdi:battery-50
+
+  solar_charge_current_high:
+    name: "Струм заряду СЕС: режим 'високий' (0-70% SOC)"
+    min: 5
+    max: 60
+    step: 1
+    unit_of_measurement: "A"
+
+  solar_charge_current_mid:
+    name: "Струм заряду СЕС: режим 'середній' (71-85% SOC)"
+    min: 5
+    max: 60
+    step: 1
+    unit_of_measurement: "A"
+
+  solar_charge_current_low:
+    name: "Струм заряду СЕС: режим 'низький' (86-100% SOC, майже повний заряд)"
+    min: 2
+    max: 30
+    step: 1
+    unit_of_measurement: "A"
+
+  # ВИПРАВЛЕННЯ (п.4 запиту користувача): раніше нічний фіксований струм
+  # (поза вікном 06:00-21:00) помилково ділив те саме значення, що й денний
+  # "середній" рівень (30А), тому коли середній рівень виправили на 20А,
+  # нічний струм також мимоволі змінився б. Тепер це окремий, незалежний
+  # параметр.
+  solar_charge_current_night:
+    name: "Струм заряду СЕС: нічний фіксований режим (поза 06:00-21:00)"
+    min: 5
+    max: 60
+    step: 1
+    unit_of_measurement: "A"
+
+input_text:
+  # НОВА ФУНКЦІЯ (діагностика в реальному часі): персистентний запис
+  # ПРИЧИНИ поточного режиму виходу — оновлюється скриптами
+  # switch_to_grid_bypass / switch_to_solar_bypass при кожному успішному
+  # переключенні (і автоматичному, і ручному через кнопки на дашборді).
+  # На відміну від сповіщень (які зникають зі стрічки), це видно на
+  # дашборді постійно, поки режим не зміниться знову.
+  output_mode_reason:
+    name: "[Внутрішній] Причина поточного режиму виходу"
+    max: 255
+    icon: mdi:message-text-clock
+
+  # НОВА ФУНКЦІЯ (Jev AI діагностика): збереження останнього рішення моделі Jev
+  # (час, фаза, вибір, ключовий контекст) для виводу на дашборд.
+  jev_last_decision:
+    name: "[Jev AI] Останнє рішення моделі"
+    max: 255
+    icon: mdi:robot
+
 template:
+  # ВИПРАВЛЕННЯ 3.6: сенсор більше НЕ читає власний попередній стан.
+  # Він лише віддзеркалює input_number.daily_energy_avg_kwh, яке HA
+  # гарантовано відновлює після рестарту. Саме оновлення EMA відбувається
+  # в окремій автоматизації "daily_energy_avg_update" (23:59).
+  #
+  # ВИПРАВЛЕННЯ (втрата значення при перезавантаженні): тут раніше був ще й
+  # тригер `platform: homeassistant, event: start`, який форсував
+  # ПЕРЕрахунок сенсора одразу на старті HA. Проблема: у момент події
+  # "start" input_number.daily_energy_avg_kwh міг ще не встигнути відновити
+  # своє попереднє значення з БД (відновлення async і не гарантовано
+  # завершується точно до "start") — тоді `states(...)` повертав
+  # unknown/0, і сенсор ПЕРЕЗАПИСУВАВ свій щойно коректно відновлений стан
+  # хибним нулем. Прибравши цей тригер, сенсор просто відновлює власне
+  # останнє значення при старті (стандартна поведінка HA для sensor із
+  # state_class) і оновлюється тільки коли input_number РЕАЛЬНО змінюється
+  # (тобто раз на добу о 23:59, або вручну) — жодної гонки умов.
   - trigger:
-      # Щоденний перерахунок середньодобового споживання о 23:59 за формулою EMA
-      - platform: time
-        at: "23:59:00"
+      - platform: state
+        entity_id: input_number.daily_energy_avg_kwh
     sensor:
-      # Розрахунок середнього споживання будинку (Експоненційне ковзне середнє)
       - name: "House Average Daily Energy"
         unique_id: house_average_daily_energy
         unit_of_measurement: "kWh"
         state_class: measurement
         device_class: energy
         icon: mdi:calculator
-        state: >
-          {% set today_total = states('sensor.overal_in_house_avr_daily_energy') | float(0) %}
-          {% set prev_avg = states('sensor.house_average_daily_energy') | float(0) %}
-          {% if prev_avg == 0 or prev_avg == none %}
-            {{ today_total | round(2) }}
-          {% elif today_total > 1.0 %}
-            {{ (prev_avg * 0.8 + today_total * 0.2) | round(2) }}
-          {% else %}
-            {{ prev_avg | round(2) }}
-          {% endif %}
+        state: "{{ states('input_number.daily_energy_avg_kwh') | float(0) | round(2) }}"
 
   - sensor:
-      # Динамічний розрахунок цільового резерву АКБ з урахуванням сезонності
       - name: "Calculated Target Reserve kWh"
         unique_id: calculated_target_reserve_kwh
         unit_of_measurement: "kWh"
         device_class: energy
         state_class: measurement
         icon: mdi:battery-charging-high
-        # ДОДАНО: Перевірка наявності даних базових сенсорів для уникнення падіння графіка в 0 під час перезавантаження HA
         availability: >
-          {{ has_value('sensor.bms_battery_full_capacity_kwh') and has_value('sensor.house_average_daily_energy') }}
+          {{ has_value('sensor.bms_battery_full_capacity_kwh') }}
+        attributes:
+          calculation_mode: >
+            {% if is_state('input_boolean.blackout_saving_mode', 'on') %}Блекаут (фіксований слайдер)
+            {% elif is_state('binary_sensor.heating_season', 'on') %}Опалювальний сезон (30% ємності АКБ)
+            {% else %}Звичайний сезон (20% ємності АКБ){% endif %}
+          battery_capacity_kwh: "{{ states('sensor.bms_battery_full_capacity_kwh') }}"
+          target_soc_pct: >
+            {% set cap = states('sensor.bms_battery_full_capacity_kwh') | float(10.0) %}
+            {{ ((this.state | float(0) / cap) * 100) | round(0) if cap > 0 else 0 }}
+        # ВАРІАНТ Б: Резерв розраховується як фіксований відсоток від повної ємності АКБ
+        # (30% в опалювальний сезон, 20% поза ним), а не від споживання будинку.
+        # Нижня межа (підстраховка) задається слайдером min_target_reserve_kwh.
         state: >
+          {% if not is_state('input_boolean.package_automations_enabled', 'on') %}
+            {{ this.state }}
+          {% else %}
           {% set full_cap = states('sensor.bms_battery_full_capacity_kwh') | float(10.0) %}
-          {% set daily_avg = states('sensor.house_average_daily_energy') | float(states('sensor.overal_in_house_avr_daily_energy') | float(10.0)) %}
-          {% set min_reserve = states('input_number.min_target_reserve_kwh') | float(3.0) %}
-          {% set is_heating = is_state('binary_sensor.heating_season', 'on') %}
-          {% set max_usable_reserve = full_cap * 0.85 %}
-          {% set ratio = 0.6 if is_heating else 0.35 %}
-          {% set raw_target = daily_avg * ratio %}
-          {{ [ [raw_target, min_reserve] | max, max_usable_reserve ] | min | round(2) }}
+          {% if is_state('input_boolean.blackout_saving_mode', 'on') or is_state('input_boolean.max_battery_mode', 'on') %}
+            {% set blackout_target = states('input_number.blackout_reserve_kwh') | float(8.0) %}
+            {{ [blackout_target, full_cap] | min | round(2) }}
+          {% else %}
+            {% set min_reserve = states('input_number.min_target_reserve_kwh') | float(2.0) %}
+            {% set is_heating = is_state('binary_sensor.heating_season', 'on') %}
+            {% set batt_ratio = 0.30 if is_heating else 0.20 %}
+            {% set raw_target = full_cap * batt_ratio %}
+            {% set max_usable_reserve = full_cap * 0.85 %}
+            {{ [ [raw_target, min_reserve] | max, max_usable_reserve ] | min | round(2) }}
+          {% endif %}
+          {% endif %}
 
-      # Повна ємність АКБ у кВт·год (Ah * V / 1000)
+      # ВИПРАВЛЕННЯ (Суттєве зауваження №1): раніше множили реальну Ah-ємність
+      # на ЖИВУ (постійно мінливу під навантаженням) напругу АКБ — через це
+      # "стала" характеристика ємності хибно "гуляла" на ~20-30% залежно від
+      # миттєвого режиму заряду/розряду, а не від реальної зміни ємності.
+      # Тепер множимо на НОМІНАЛЬНУ напругу пакета (константа нижче) —
+      # стабільне число, яке відповідає реальній фізичній ємності.
+      # ПРИПУЩЕННЯ: 51.2В (16S LiFePO4, типова "48В" система, як у вас
+      # judging з назви select.anenji_anj_11kw_48v_...) — якщо конфігурація
+      # інша (інша кількість елементів/хімія), скажіть номінальну напругу.
+      #
+      # ЗАХИСТ ВІД НЕДОСТУПНОСТІ (Суттєве зауваження №1, друга частина):
+      # sensor.bms_battery_full_capacity може стати unavailable/0 при
+      # відключенні BMS або під час рестарту HA. Замість помилкового 0 (який
+      # каскадно зламав би calculated_target_reserve_kwh і
+      # min_reserve_slider_clamp), сенсор тримає ОСТАННЄ відоме значення —
+      # ємність батареї не змінюється за секунди, тож "заморозка" тут
+      # безпечніша за миттєвий хибний перерахунок.
       - name: "BMS Battery Full Capacity kWh"
         unique_id: bms_battery_full_capacity_kwh
         unit_of_measurement: "kWh"
         device_class: energy
         state_class: measurement
-        # ДОДАНО: Блокування розрахунку до моменту отримання даних від інтеграції BMS
-        availability: >
-          {{ has_value('sensor.bms_battery_full_capacity') and has_value('sensor.bms_battery_total_voltage') }}
+        icon: mdi:battery-check
         state: >
-          {% set ah = states('sensor.bms_battery_full_capacity') | float(0) %}
-          {% set v = states('sensor.bms_battery_total_voltage') | float(0) %}
-          {{ ((ah * v) / 1000) | round(2) }}
+          {% if not is_state('input_boolean.package_automations_enabled', 'on') %}
+            {{ this.state }}
+          {% else %}
+          {% set nominal_voltage = 51.2 %}
+          {% set ah = states('sensor.bms_battery_full_capacity') | float(-1) %}
+          {% if ah > 0 %}
+            {{ ((ah * nominal_voltage) / 1000) | round(2) }}
+          {% else %}
+            {{ this.state }}
+          {% endif %}
+          {% endif %}
 
-      # Залишкова ємність АКБ у кВт·год (Ah * V / 1000)
       - name: "BMS Battery Remaining kWh"
         unique_id: bms_battery_remaining_kwh
         unit_of_measurement: "kWh"
         device_class: energy
         state_class: measurement
-        # ДОДАНО: Блокування розрахунку до моменту отримання даних від інтеграції BMS
         availability: >
           {{ has_value('sensor.bms_battery_remaining_capacity') and has_value('sensor.bms_battery_total_voltage') }}
         state: >
+          {% if not is_state('input_boolean.package_automations_enabled', 'on') %}
+            {{ this.state }}
+          {% else %}
           {% set ah = states('sensor.bms_battery_remaining_capacity') | float(0) %}
           {% set v = states('sensor.bms_battery_total_voltage') | float(0) %}
           {{ ((ah * v) / 1000) | round(2) }}
+          {% endif %}
 
-      # Математично розрахований відсоток заряду (SOC) для дублювання BMS
       - name: "BMS Battery SOC Calculated"
         unique_id: bms_battery_soc_calculated
         unit_of_measurement: "%"
         device_class: battery
         state_class: measurement
-        # ДОДАНО: Блокування розрахунку до моменту отримання даних від інтеграції BMS
         availability: >
           {{ has_value('sensor.bms_battery_remaining_capacity') and has_value('sensor.bms_battery_full_capacity') }}
         state: >
+          {% if not is_state('input_boolean.package_automations_enabled', 'on') %}
+            {{ this.state }}
+          {% else %}
           {% set rem = states('sensor.bms_battery_remaining_capacity') | float(0) %}
           {% set full = states('sensor.bms_battery_full_capacity') | float(1) %}
           {% if full > 0 %}
@@ -126,90 +403,502 @@ template:
           {% else %}
             0
           {% endif %}
+          {% endif %}
 
-      # Дефіцит енергії АКБ до досягнення цільового резерву з урахуванням сонячного прогнозу
       - name: "Battery Energy Deficit"
         unique_id: battery_energy_deficit
         unit_of_measurement: "kWh"
         state_class: measurement
         icon: mdi:battery-alert
-        # ДОДАНО: Блокування розрахунку до отримання всіх складових, включно з прогнозом сонячної генерації
         availability: >
           {{ has_value('sensor.calculated_target_reserve_kwh') and has_value('sensor.bms_battery_remaining_kwh') and has_value('sensor.volcast_solar_forecast_solar_forecast_remaining_today') }}
         state: >
+          {% if not is_state('input_boolean.package_automations_enabled', 'on') %}
+            {{ this.state }}
+          {% else %}
           {% set target = states('sensor.calculated_target_reserve_kwh') | float(0) %}
           {% set rem_kwh = states('sensor.bms_battery_remaining_kwh') | float(0) %}
           {% set solar_forecast_remaining = states('sensor.volcast_solar_forecast_solar_forecast_remaining_today') | float(0) %}
           {% set deficit = target - (rem_kwh + solar_forecast_remaining) %}
           {{ [deficit, 0] | max | round(2) }}
+          {% endif %}
 
-  - binary_sensor:
-      # Бінарний сенсор опалювального сезону (жовтень - квітень)
+      # ВИПРАВЛЕННЯ 3.3 + 3.7: винесено з automation "solar_auto_evening_grid",
+      # щоб цю ж оцінку "чи вистачить завтра" міг використовувати і нічний
+      # заряд від мережі (раніше вмикався щоночі "наосліп", без урахування
+      # прогнозу на завтра). Також виправлено небезпечний дефолт float(0):
+      # якщо прогноз споживання на завтра недоступний, використовується відоме
+      # середнє споживання, а НЕ 0 (0 хибно занижував би оцінку дефіциту і міг
+      # призвести до помилкового рішення "дефіциту немає").
+      - name: "Tomorrow Energy Deficit"
+        unique_id: tomorrow_energy_deficit
+        unit_of_measurement: "kWh"
+        state_class: measurement
+        icon: mdi:battery-alert-variant-outline
+        availability: >
+          {{ has_value('sensor.calculated_target_reserve_kwh') and has_value('sensor.bms_battery_remaining_kwh') }}
+        state: >
+          {% if not is_state('input_boolean.package_automations_enabled', 'on') %}
+            {{ this.state }}
+          {% else %}
+          {# ВИПРАВЛЕННЯ (за запитом користувача): прибрано ненадійний прогноз споживання
+             (house_energy_forecast_tomorrow). Використовуємо стабільне експоненційне
+             середньодобове споживання будинку з коефіцієнтом 1.2 #}
+          {% set cons_tomorrow = (states('sensor.house_average_daily_energy') | float(10.0)) * 1.2 %}
+          {# ВИПРАВЛЕННЯ: замість жорсткого хаіркату ×0.8 — калібрувальний
+             коефіцієнт input_number.solar_forecast_calibration_factor
+             (за замовчуванням 1.0, підлаштовується за спостереженнями). #}
+          {% set solar_tomorrow = states('sensor.volcast_solar_forecast_energy_forecast_tomorrow') | float(0) * (states('input_number.solar_forecast_calibration_factor') | float(1.0)) %}
+          {% set reserve_kwh = states('sensor.calculated_target_reserve_kwh') | float(0) %}
+          {% set current_batt_kwh = states('sensor.bms_battery_remaining_kwh') | float(0) %}
+          {# ВИПРАВЛЕННЯ (за скаргою користувача): цей сенсор рахується о
+             23:00 і раніше вважав, що весь поточний запас АКБ (понад
+             резерв) буде доступний "на завтра" — але якщо систему НЕ
+             перемкнути на мережу зараз, АКБ додатково витратиться на
+             споживання будинку вночі (23:00-07:00, жодного сонця, немає
+             чим компенсувати) ще ДО того, як "завтра" взагалі настане.
+             Через це дефіцит систематично занижувався, вечірнє
+             переключення на мережу не спрацьовувало, АКБ марно
+             розряджалась вночі (коли тариф дешевий і варто саме заряджати
+             чи економити АКБ), а не вранці (коли тариф дорогий і саме тоді
+             варто її використовувати). Тепер віднімаємо орієнтовне нічне
+             споживання (8 год із 24, від середньодобового) ПЕРЕД тим, як
+             рахувати запас понад резерв. #}
+          {% set overnight_consumption_est = (states('sensor.house_average_daily_energy') | float(10.0)) * (8 / 24) %}
+          {% set available_batt_kwh = [current_batt_kwh - overnight_consumption_est - reserve_kwh, 0] | max %}
+          {% set deficit = cons_tomorrow - (solar_tomorrow + available_batt_kwh) %}
+          {{ [deficit, 0] | max | round(2) }}
+          {% endif %}
+
+      # Для РАНКОВОГО рішення (7:00, і будь-коли, коли АКБ дозаряджається до
+      # 30% пізніше — див. тригери автоматизації morning_solar): чи варто
+      # взагалі перемикатись на сонце сьогодні, чи прогноз генерації
+      # настільки слабкий, що краще лишитись на мережі увесь день (уникнути
+      # зайвого циклу перемикання туди-й-назад).
+      # ВАЖЛИВО: використовуємо саме "залишок прогнозу на СЬОГОДНІ"
+      # (solar_forecast_remaining_today), а не повний денний прогноз — це
+      # значення динамічно зменшується протягом дня, тож якщо АКБ дозарядиться
+      # до 30% лише опівдні, розрахунок коректно врахує, що частина сонячного
+      # дня вже минула, а не порахує генерацію, якої вже не буде.
+      # На відміну від старої версії, тут більше немає жорсткого "хаіркату" —
+      # використовується спільний input_number.solar_forecast_calibration_factor
+      # (за замовчуванням 1.0 — довіра прогнозу як є, підлаштовується вручну).
+      - name: "Today Solar Shortfall"
+        unique_id: today_solar_shortfall_kwh
+        unit_of_measurement: "kWh"
+        state_class: measurement
+        icon: mdi:weather-cloudy-alert
+        availability: >
+          {{ has_value('sensor.calculated_target_reserve_kwh') and has_value('sensor.bms_battery_remaining_kwh') }}
+        state: >
+          {% if not is_state('input_boolean.package_automations_enabled', 'on') %}
+            {{ this.state }}
+          {% else %}
+          {# ВИПРАВЛЕННЯ (за запитом користувача): прибрано ненадійний прогноз споживання
+             (house_energy_forecast_today). Використовуємо стабільне експоненційне
+             середньодобове споживання будинку з коефіцієнтом 1.2 #}
+          {% set cons_today = (states('sensor.house_average_daily_energy') | float(10.0)) * 1.2 %}
+          {% set solar_remaining_today = states('sensor.volcast_solar_forecast_solar_forecast_remaining_today') | float(0) * (states('input_number.solar_forecast_calibration_factor') | float(1.0)) %}
+          {% set reserve_kwh = states('sensor.calculated_target_reserve_kwh') | float(0) %}
+          {% set current_batt_kwh = states('sensor.bms_battery_remaining_kwh') | float(0) %}
+          {% set batt_slack = [current_batt_kwh - reserve_kwh, 0] | max %}
+          {% set shortfall = cons_today - (solar_remaining_today + batt_slack) %}
+          {{ [shortfall, 0] | max | round(2) }}
+          {% endif %}
+
+      # НОВА ФУНКЦІЯ (діагностика в реальному часі): час НАСТУПНОЇ
+      # запланованої перевірки автоматики день/ніч — 07:00 (якщо зараз на
+      # мережі) або 23:00 (якщо зараз на сонці). device_class: timestamp
+      # дозволяє дашборду відображати зручний зворотний відлік ("через N
+      # год"). Це саме ЗАПЛАНОВАНИЙ час — реактивні тригери (зміна SOC,
+      # прогнозу) можуть спричинити перемикання РАНІШЕ цього часу.
+      - name: "Next Scheduled Mode Check"
+        unique_id: next_scheduled_mode_check
+        device_class: timestamp
+        icon: mdi:clock-time-eight-outline
+        state: >
+          {% if not is_state('input_boolean.package_automations_enabled', 'on') %}
+            {{ this.state }}
+          {% else %}
+          {% set target = today_at("07:00:00") if is_state('input_boolean.output_on_grid', 'on') else today_at("23:00:00") %}
+          {% if now() >= target %}
+            {% set target = target + timedelta(days=1) %}
+          {% endif %}
+          {{ target.isoformat() }}
+          {% endif %}
+
+      # НОВА ФУНКЦІЯ (діагностика): скільки часу тривав поточний режим
+      # виходу (мережа/сонце) — читає last_changed input_boolean.output_on_grid,
+      # яке встановлюють скрипти switch_to_grid_bypass/switch_to_solar_bypass.
+      - name: "Time In Current Output Mode"
+        unique_id: time_in_current_output_mode
+        icon: mdi:timer-sand
+        state: >
+          {% set since = states.input_boolean.output_on_grid.last_changed %}
+          {% set delta = now() - since %}
+          {% set total_min = (delta.total_seconds() / 60) | int %}
+          {% set h = (total_min // 60) | int %}
+          {% set m = (total_min % 60) | int %}
+          {{ h }} год {{ m }} хв
+
+      # НОВА ФУНКЦІЯ (діагностика): оцінка, на скільки ще вистачить
+      # сонця/АКБ у поточному режимі, ДО того, як спрацює "страховка по
+      # резерву" (актуально лише в опалювальний сезон чи режим
+      # Блекаут/Економія — саме там daytime_fallback активний; поза цими
+      # умовами "агресивний" режим не має такого обмеження — резерв
+      # ігнорується свідомо, тож оцінка тут не застосовна).
+      # Розрахунок навмисно через потужність споживання будинку МІНУС
+      # потужність СЕС (обидва сенсори завжди невід'ємні за визначенням) —
+      # а не через "живу" потужність АКБ, де напрямок (заряд/розряд) не
+      # гарантовано відомий для конкретної інтеграції/полярності підключення.
+      # Це ОЦІНКА при незмінному поточному навантаженні й генерації —
+      # реальний час може відрізнятись, якщо хмари чи споживання зміняться.
+      - name: "Estimated Solar Mode Remaining"
+        unique_id: estimated_solar_mode_remaining
+        icon: mdi:progress-clock
+        state: >
+          {% if is_state('input_boolean.output_on_grid', 'on') %}
+            не застосовно (зараз на мережі)
+          {% elif is_state('binary_sensor.aggressive_solar_mode', 'on') %}
+            не обмежено (максимум сонця — резерв ігнорується)
+          {% else %}
+          {% set house_w = states('sensor.1din_relay_main_power') | float(0) %}
+          {% set pv_w = states('sensor.anenji_anj_11kw_48v_wifi_p_pv_power') | float(0) %}
+          {% set net_drain_w = house_w - pv_w %}
+          {% set current_batt_kwh = states('sensor.bms_battery_remaining_kwh') | float(0) %}
+          {% set reserve_kwh = states('sensor.calculated_target_reserve_kwh') | float(0) %}
+          {% set batt_slack_kwh = [current_batt_kwh - reserve_kwh, 0] | max %}
+          {% if net_drain_w <= 50 %}
+            сонце покриває споживання — необмежено
+          {% else %}
+            {% set hours_left = batt_slack_kwh / (net_drain_w / 1000) %}
+            {% set h = hours_left | int %}
+            {% set m = ((hours_left - h) * 60) | int %}
+            ≈{{ h }} год {{ m }} хв (оцінка при поточному навантаженні)
+          {% endif %}
+          {% endif %}
+
+      # НОВА ФУНКЦІЯ (Максимум АКБ): розрахунок погодинного енергетичного балансу до кінця
+      # генерації (17:00).
+      # E_balance = E_pv_rem - (E_need + E_house_rem)
+      # Додатнє значення (>0) = сонце покриває і заряд АКБ до 100%, і дім -> вигідно бути на Сонці.
+      # Від'ємне значення (<0) = сонця не вистачає на обидва завдання -> дефіцит, пріоритет заряду АКБ (дім на мережу).
+      - name: "Max Battery Trajectory Balance"
+        unique_id: max_battery_trajectory_balance
+        unit_of_measurement: "kWh"
+        device_class: energy
+        state_class: measurement
+        icon: mdi:scale-balance
+        availability: >
+          {{ has_value('sensor.bms_battery_remaining_kwh') and has_value('sensor.bms_battery_full_capacity_kwh') }}
+        state: >
+          {% set full_cap = states('sensor.bms_battery_full_capacity_kwh') | float(10.0) %}
+          {% set rem_cap = states('sensor.bms_battery_remaining_kwh') | float(0.0) %}
+          {% set target_cap = [states('input_number.blackout_reserve_kwh') | float(full_cap * 0.90), full_cap] | min %}
+          {% set e_need = [((target_cap - rem_cap) / 0.90), 0.0] | max %}
+          {% set calib = states('input_number.solar_forecast_calibration_factor') | float(1.0) %}
+          {% set hours_list = state_attr('sensor.volcast_solar_forecast_energy_forecast_today', 'hours') %}
+          {% set cur_h = now().hour %}
+          {% set ns = namespace(pv_rem=0.0) %}
+          {% if hours_list is sequence and hours_list is not string and hours_list | length > 0 %}
+            {% for item in hours_list %}
+              {% if item is mapping and 'hour' in item and 'energy_kwh' in item %}
+                {% if item.hour >= cur_h and item.hour <= 17 %}
+                  {% set ns.pv_rem = ns.pv_rem + (item.energy_kwh | float(0)) %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+          {% else %}
+            {% set ns.pv_rem = states('sensor.volcast_solar_forecast_solar_forecast_remaining_today') | float(0) %}
+          {% endif %}
+          {% set pv_rem_adj = ns.pv_rem * calib %}
+          {% set daily_avg = states('sensor.house_average_daily_energy') | float(12.0) %}
+          {% set hourly_house = daily_avg / 24.0 %}
+          {% set remaining_daylight_hours = [17 - cur_h, 0] | max %}
+          {% set house_rem = remaining_daylight_hours * hourly_house %}
+          {% set balance = pv_rem_adj - (e_need + house_rem) %}
+          {{ balance | round(2) }}
+        attributes:
+          e_need_kwh: >
+            {% set full_cap = states('sensor.bms_battery_full_capacity_kwh') | float(10.0) %}
+            {% set rem_cap = states('sensor.bms_battery_remaining_kwh') | float(0.0) %}
+            {% set target_cap = [states('input_number.blackout_reserve_kwh') | float(full_cap * 0.90), full_cap] | min %}
+            {{ ([((target_cap - rem_cap) / 0.90), 0.0] | max) | round(2) }}
+          target_reserve_kwh: >
+            {{ states('input_number.blackout_reserve_kwh') | float(8.0) | round(1) }}
+          pv_rem_kwh: >
+            {% set calib = states('input_number.solar_forecast_calibration_factor') | float(1.0) %}
+            {% set hours_list = state_attr('sensor.volcast_solar_forecast_energy_forecast_today', 'hours') %}
+            {% set cur_h = now().hour %}
+            {% set ns = namespace(pv_rem=0.0) %}
+            {% if hours_list is sequence and hours_list is not string and hours_list | length > 0 %}
+              {% for item in hours_list %}
+                {% if item is mapping and 'hour' in item and 'energy_kwh' in item %}
+                  {% if item.hour >= cur_h and item.hour <= 17 %}
+                    {% set ns.pv_rem = ns.pv_rem + (item.energy_kwh | float(0)) %}
+                  {% endif %}
+                {% endif %}
+              {% endfor %}
+            {% else %}
+              {% set ns.pv_rem = states('sensor.volcast_solar_forecast_solar_forecast_remaining_today') | float(0) %}
+            {% endif %}
+            {{ (ns.pv_rem * calib) | round(2) }}
+          house_rem_kwh: >
+            {% set daily_avg = states('sensor.house_average_daily_energy') | float(12.0) %}
+            {% set hourly_house = daily_avg / 24.0 %}
+            {% set cur_h = now().hour %}
+            {{ (([17 - cur_h, 0] | max) * hourly_house) | round(2) }}
+
+      # НОВА ФУНКЦІЯ (Максимум АКБ): читабельний статус для інтерфейсу/дашборду
+      - name: "Max Battery Status"
+        unique_id: max_battery_status
+        icon: mdi:battery-clock
+        state: >
+          {% set is_active = is_state('input_boolean.max_battery_mode', 'on') %}
+          {% if not is_active %}
+            Вимкнено
+          {% else %}
+            {% set soc = states('sensor.bms_battery_state_of_charge') | float(0) %}
+            {% set target_kwh = states('input_number.blackout_reserve_kwh') | float(8.0) %}
+            {% set full_cap = states('sensor.bms_battery_full_capacity_kwh') | float(10.0) %}
+            {% set rem_cap = states('sensor.bms_battery_remaining_kwh') | float(0.0) %}
+            {% set target_soc = (target_kwh / full_cap * 100) | round(0) if full_cap > 0 else 90 %}
+            {% set is_target_ready = rem_cap >= target_kwh or soc >= target_soc %}
+            {% if is_state('binary_sensor.oblenergo_grid', 'off') %}
+              🚨 Мережа відсутня (СЕС/АКБ, {{ soc | round(0) }}%)
+            {% else %}
+              {% set on_grid = is_state('input_boolean.output_on_grid', 'on') %}
+              {% set balance = states('sensor.max_battery_trajectory_balance') | float(0) %}
+              {% set pv_power = states('sensor.anenji_anj_11kw_48v_wifi_p_pv_power') | float(0) %}
+              {% set forecast_today = (states('sensor.volcast_solar_forecast_energy_forecast_today') | float(0) * (states('input_number.solar_forecast_calibration_factor') | float(1.0))) | round(1) %}
+              {% if on_grid and forecast_today < 2.5 and is_state('binary_sensor.heating_season', 'on') %}
+                🛡️ Прогноз СЕС замалий ({{ forecast_today }} < 2.5 кВт·год, дім на мережі)
+              {% elif on_grid and (now().hour >= 17 or pv_power < 150) %}
+                🛡️ Збереження АКБ ({{ soc | round(0) }}%, дім на мережі)
+              {% elif is_target_ready and not on_grid %}
+                ✅ АКБ ≥ {{ target_kwh | round(1) }} кВт·год (сонце живить дім)
+              {% elif is_target_ready and on_grid %}
+                ✅ АКБ ≥ {{ target_kwh | round(1) }} кВт·год збережено (дім на мережі)
+              {% elif balance >= 0 and not on_grid %}
+                ☀️ Сонця вдосталь (+{{ balance | round(1) }} кВт·год, дім на СЕС)
+              {% else %}
+                🔌 Пріоритет АКБ (дефіцит {{ balance | round(1) }} кВт·год, дім на мережі)
+              {% endif %}
+            {% endif %}
+          {% endif %}
+
+    binary_sensor:
       - name: "Heating Season"
         unique_id: heating_season
         icon: mdi:radiator
         state: >
+          {% if not is_state('input_boolean.package_automations_enabled', 'on') %}
+            {{ this.state }}
+          {% else %}
           {% set m = now().month %}
           {{ m >= 10 or m <= 4 }}
+          {% endif %}
 
-      # Бінарний сенсор вікна нічного тарифу (23:00 - 07:00)
+      # ⚠️ ПРИМІТКА: у пакеті є ДВА окремих "нічних" вікна з різними
+      # межами — не плутайте їх:
+      #  1) Це вікно, "Night Tariff Window" (23:00-07:00) — вікно
+      #     дешевого нічного тарифу, використовується для рішення про
+      #     ЗАРЯД АКБ ВІД МЕРЕЖІ (solar_battery_grid_charge_logic).
+      #  2) Окреме, ІНШЕ вікно (21:00-06:00) всередині
+      #     solar_max_charge_current_control — це розклад для фіксованого
+      #     струму заряду СЕС (сонячних панелей), не пов'язаний з тарифом.
+      # Різні межі — навмисно: тарифне вікно прив'язане до розкладу
+      # постачальника електроенергії, а вікно СЕС — до типового часу
+      # відсутності сонця.
       - name: "Night Tariff Window"
         unique_id: night_tariff_window
         icon: mdi:weather-night
         state: >
+          {% if not is_state('input_boolean.package_automations_enabled', 'on') %}
+            {{ this.state }}
+          {% else %}
           {% set h = now().hour %}
           {{ h >= 23 or h < 7 }}
+          {% endif %}
 
-      # Ознака наявності суттєвого дефіциту запасу енергії (> 0.3 kWh)
+      # ВИПРАВЛЕННЯ (за уточненням користувача): раніше цей режим вмикався
+      # АВТОМАТИЧНО поза опалювальним сезоном. Тепер — керується напряму
+      # перемикачем input_boolean.max_solar_battery_mode (🔆 Максимум
+      # Сонця/АКБ), який користувач вмикає сам (типово поза опалювальним
+      # сезоном, коли денний тариф мережі вдвічі дорожчий за нічний
+      # (07:00-23:00) — вигідно максимально використовувати сонце й АКБ
+      # вдень, навіть якщо заряд опускається нижче звичайного розрахованого
+      # резерву; компенсація — дешевий нічний заряд за потреби, вже
+      # реалізовано в grid_charge_logic). За замовчуванням (обидва
+      # перемикачі — і цей, і Блекаут — вимкнені) діє звичайна консервативна
+      # "по резерву" логіка. binary_sensor.heating_season тут більше НЕ
+      # перевіряється — season має значення лише для сезонного коефіцієнта
+      # в sensor.calculated_target_reserve_kwh та денного заряду від мережі,
+      # не для цього прапорця.
+      # Перевірка blackout_saving_mode==off тут — захист про всяк випадок
+      # (automation exclusive_mode_switches вже не дає їм бути on одночасно,
+      # але цей дублюючий чек не завадить, якщо та автоматизація з якоїсь
+      # причини не спрацює).
+      - name: "Aggressive Solar Mode"
+        unique_id: aggressive_solar_mode
+        icon: mdi:solar-power-variant
+        state: >
+          {% if not is_state('input_boolean.package_automations_enabled', 'on') %}
+            {{ this.state }}
+          {% else %}
+          {{ is_state('input_boolean.max_solar_battery_mode', 'on') and is_state('input_boolean.blackout_saving_mode', 'off') }}
+          {% endif %}
+
+      # Поріг — це "мертва зона" проти шуму: сирий дефіцит
+      # (sensor.battery_energy_deficit) майже ніколи не буде рівно 0.00 через
+      # округлення прогнозів/сенсорів, тож без порогу цей binary_sensor
+      # смикався б "on" від будь-якого мізерного (0.01-0.1 кВт·год) залишку,
+      # запускаючи автоматизації через незначні коливання. Значення —
+      # спільне з двома іншими deficit-сенсорами нижче (одна зміна
+      # input_number.significant_deficit_threshold_kwh впливає на всі три).
       - name: "Battery Deficit Active"
         unique_id: battery_deficit_active
         icon: mdi:battery-minus
-        # ДОДАНО: Використання availability основного сенсора дефіциту
         availability: >
           {{ has_value('sensor.battery_energy_deficit') }}
         state: >
-          {{ states('sensor.battery_energy_deficit') | float(0) > 0.3 }}
+          {% if not is_state('input_boolean.package_automations_enabled', 'on') %}
+            {{ this.state }}
+          {% else %}
+          {{ states('sensor.battery_energy_deficit') | float(0) > (states('input_number.significant_deficit_threshold_kwh') | float(0.3)) }}
+          {% endif %}
 
-# ------------------------------------------------------------------------------
-# 3. СКРИПТИ ВИКОНАННЯ ДІЙ З ДВОСТОРОННІМИ СПОВІЩЕННЯМИ (SCRIPTS)
-# ------------------------------------------------------------------------------
+      - name: "Tomorrow Deficit Active"
+        unique_id: tomorrow_deficit_active
+        icon: mdi:battery-minus-variant
+        availability: >
+          {{ has_value('sensor.tomorrow_energy_deficit') }}
+        state: >
+          {% if not is_state('input_boolean.package_automations_enabled', 'on') %}
+            {{ this.state }}
+          {% else %}
+          {{ states('sensor.tomorrow_energy_deficit') | float(0) > (states('input_number.significant_deficit_threshold_kwh') | float(0.3)) }}
+          {% endif %}
+
+      # Використовується ранковою автоматизацією: якщо true — сьогоднішній
+      # прогноз генерації (консервативно оцінений) навряд чи покриє
+      # споживання будинку навіть з урахуванням доступного запасу АКБ понад
+      # резерв, тож немає сенсу перемикатись на сонце цього ранку.
+      - name: "Today Solar Insufficient"
+        unique_id: today_solar_insufficient
+        icon: mdi:weather-cloudy-alert
+        availability: >
+          {{ has_value('sensor.today_solar_shortfall_kwh') }}
+        state: >
+          {% if not is_state('input_boolean.package_automations_enabled', 'on') %}
+            {{ this.state }}
+          {% else %}
+          {{ states('sensor.today_solar_shortfall_kwh') | float(0) > (states('input_number.significant_deficit_threshold_kwh') | float(0.3)) }}
+          {% endif %}
+
+      # ВИПРАВЛЕННЯ 3.4: раніше в трьох автоматизаціях повторювався неоднозначний
+      # inline-шаблон `(now() - as_datetime(states('sensor.online'))).total_seconds() > 180`,
+      # семантика якого залежала від невідомого сенсу sensor.online (heartbeat
+      # оновлення ЧИ час підключення пристрою). Тут явно розділено на дві
+      # незалежні, однозначні перевірки:
+      #  1) свіжість даних SOC — захист від дій на застарілих показаннях;
+      #  2) стабільність зв'язку — sensor.online не змінювався останні 180с
+      #     (захист від дій одразу після перепідключення/фліпання).
+      # ПЕРЕВІРТЕ фактичну семантику sensor.online у вашій системі і, якщо вона
+      # відрізняється від "час останньої зміни/підключення", скоригуйте пункт (2).
+      - name: "System Ready For Automation"
+        unique_id: system_ready_for_automation
+        icon: mdi:check-network-outline
+        availability: >
+          {{ has_value('sensor.bms_battery_state_of_charge') and has_value('sensor.online') }}
+        state: >
+          {% if not is_state('input_boolean.package_automations_enabled', 'on') %}
+            {{ this.state }}
+          {% else %}
+          {% set soc_ts = states.sensor.bms_battery_state_of_charge.last_reported or states.sensor.bms_battery_state_of_charge.last_updated %}
+          {% set soc_fresh = soc_ts is not none and (now() - soc_ts).total_seconds() < 120 %}
+          {% set link_stable = (now() - states.sensor.online.last_changed).total_seconds() > 180 %}
+          {{ soc_fresh and link_stable }}
+          {% endif %}
+
+
 script:
-  # Переключення живлення будинку на міську мережу (PV-Utility-Battery) з затримками
   switch_to_grid_bypass:
-    alias: "[Anenji] Переключення виходу на МЕРЕЖУ (з затримкою реле)"
+    alias: "[Anenji] Переключення виходу на МЕРЕЖУ"
     mode: single
+    # НОВА ФУНКЦІЯ (діагностика): необов'язкове поле "reason" — автоматизації
+    # передають сюди текст причини (той самий, що йде в сповіщення), скрипт
+    # записує його в input_text.output_mode_reason при успіху. Якщо не
+    # передано (наприклад, кнопка "Перемкнути на МЕРЕЖУ" на дашборді) —
+    # дефолтний текст "Ручне перемикання".
+    fields:
+      reason:
+        description: "Причина перемикання (для діагностичного індикатора на дашборді)"
+        example: "Аварійний байпас: SOC < 15%"
+        default: "Ручне перемикання (кнопка на дашборді)"
     sequence:
-      # Перевірка: якщо вихід вже на мережі і реле увімкнено — вихід без дій
+      # ЗАХИСТ ВІД АВТОМАТИЧНИХ ДІЙ ПРИ БЛЕКАУТІ:
+      # Якщо міська мережа відсутня (binary_sensor.oblenergo_grid off), інвертор автономно
+      # живить дім від СЕС/АКБ. Автоматичні перемикання блокуються (дозволено лише ручну кнопку).
+      - if:
+          - condition: state
+            entity_id: binary_sensor.oblenergo_grid
+            state: "off"
+          - condition: template
+            value_template: "{{ not ('Ручне' in (reason | default(''))) }}"
+        then:
+          - stop: "Міська мережа відсутня (binary_sensor.oblenergo_grid: off). Автоматичне перемикання виходу скасовано."
+
+      # ВИМОГА КОРИСТУВАЧА: switch.invertor_220_in (DIN-реле вводу мережі)
+      # вмикається автоматично, ТІЛЬКИ якщо активний input_boolean.auto_control_din_relay.
+      - if:
+          - condition: state
+            entity_id: input_boolean.auto_control_din_relay
+            state: "on"
+          - condition: state
+            entity_id: switch.invertor_220_in
+            state: "off"
+        then:
+          - action: switch.turn_on
+            target:
+              entity_id: switch.invertor_220_in
+          - action: persistent_notification.create
+            data:
+              title: "🔌 DIN-реле мережі увімкнено автоматично"
+              message: >
+                switch.invertor_220_in було вимкнено — увімкнено автоматично,
+                оскільки активний автоматичний контроль DIN-реле.
+          - delay:
+              seconds: 5
+
+      # ВИПРАВЛЕННЯ (п.5 запиту користувача): перевірку напруги мережі
+      # прибрано з режиму байпасу — інвертор сам коректно обробляє
+      # відсутність мережі незалежно від встановленого пріоритету виходу
+      # (він не "зависає" без живлення, а автоматично живиться від
+      # доступного джерела), тож додаткова програмна перевірка тут зайва.
+
+      # ВИПРАВЛЕННЯ 3.1: фіксуємо цільовий режим у окремому input_boolean,
+      # незалежному від switch.invertor_220_in (яке тепер завжди on, тож не
+      # може слугувати індикатором того, звідки саме зараз живиться будинок).
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.output_on_grid
+
       - if:
           - condition: template
             value_template: >
-              {% set output_grid = is_state('select.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') or is_state('sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') %}
-              {% set relay_on = is_state('switch.invertor_220_in', 'on') %}
-              {{ output_grid and relay_on }}
+              {{ is_state('select.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') or is_state('sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') }}
         then:
-          - stop: "Вихід вже у режимі PV-Utility-Battery та DIN-реле увімкнено."
+          - stop: "Вихід вже у режимі PV-Utility-Battery. Зайві команди не потрібні."
 
-      # Крок 1: Подача напруги 220В на вхід інвертора AC IN
-      - action: switch.turn_on
-        target:
-          entity_id: switch.invertor_220_in
-
-      # Пауза 30 секунд для стабілізації вхідної мережі
-      - delay:
-          seconds: 30
-
-      # Крок 2: Зміна пріоритету виходу інвертора на мережу
       - action: select.select_option
         target:
           entity_id: select.anenji_anj_11kw_48v_wifi_p_output_source_priority
         data:
           option: "PV-Utility-Battery"
-
-      # Пауза 30 секунд для виконання перемикання інвертором
       - delay:
-          seconds: 30
+          seconds: 10
 
-      # Перевірка фактичного виконання команди та відправка сповіщення
       - if:
           - condition: template
             value_template: >
@@ -220,61 +909,80 @@ script:
               title: "⚠️ Помилка переключення виходу Anenji"
               message: "Пріоритет виходу НЕ змінився на 'PV-Utility-Battery'!"
         else:
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.output_mode_reason
+            data:
+              value: "{{ (reason | default('Ручне перемикання (кнопка на дашборді)'))[:255] }}"
           - action: persistent_notification.create
             data:
               title: "✅ Успішне переключення на МЕРЕЖУ"
-              message: "Вихід інвертора успішно переключено на 'PV-Utility-Battery'. DIN-реле увімкнено (SOC: {{ states('sensor.bms_battery_state_of_charge') }}%)."
+              message: >
+                Вихід інвертора успішно переключено на 'PV-Utility-Battery'.
+                Ініціатор / Причина: {{ (reason | default('👤 Ручне перемикання (кнопка на дашборді)')) }}
 
-  # Переключення живлення будинку на АКБ/СЕС (PV-Battery-Utility)
   switch_to_solar_bypass:
-    alias: "[Anenji] Переключення виходу на СОНЦЕ/АКБ (з затримкою реле)"
+    alias: "[Anenji] Переключення виходу на СОНЦЕ/АКБ"
     mode: single
+    fields:
+      reason:
+        description: "Причина перемикання (для діагностичного індикатора на дашборді)"
+        example: "Ранкове перемикання: АКБ 45%, прогноз достатній"
+        default: "Ручне перемикання (кнопка на дашборді)"
     sequence:
-      # Перевірка: якщо вихід вже на АКБ/СЕС, вимикаємо реле (за потреби) без зайвих повідомлень
+      # ЗАХИСТ ВІД АВТОМАТИЧНИХ ДІЙ ПРИ БЛЕКАУТІ:
+      # Якщо міська мережа відсутня (binary_sensor.oblenergo_grid off), інвертор автономно
+      # живить дім від СЕС/АКБ. Автоматичні перемикання блокуються (дозволено лише ручну кнопку).
+      - if:
+          - condition: state
+            entity_id: binary_sensor.oblenergo_grid
+            state: "off"
+          - condition: template
+            value_template: "{{ not ('Ручне' in (reason | default(''))) }}"
+        then:
+          - stop: "Міська мережа відсутня (binary_sensor.oblenergo_grid: off). Автоматичне перемикання виходу скасовано."
+
+      # РЕЛЕ УВІМКНЕНО АВТОМАТИЧНО ТІЛЬКИ ЯКЩО УВІМКНЕНО АВТО-КОНТРОЛЬ:
+      - if:
+          - condition: state
+            entity_id: input_boolean.auto_control_din_relay
+            state: "on"
+          - condition: state
+            entity_id: switch.invertor_220_in
+            state: "off"
+        then:
+          - action: switch.turn_on
+            target:
+              entity_id: switch.invertor_220_in
+          - action: persistent_notification.create
+            data:
+              title: "🔌 DIN-реле мережі увімкнено автоматично"
+              message: >
+                switch.invertor_220_in було вимкнено — увімкнено автоматично,
+                оскільки активний автоматичний контроль DIN-реле.
+          - delay:
+              seconds: 5
+
+      # ВИПРАВЛЕННЯ 3.1: синхронізуємо той самий незалежний прапорець режиму.
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.output_on_grid
+
       - if:
           - condition: template
             value_template: >
-              {% set output_ok = is_state('select.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Battery-Utility') or is_state('sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Battery-Utility') %}
-              {{ output_ok }}
+              {{ is_state('select.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Battery-Utility') or is_state('sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Battery-Utility') }}
         then:
-          - if:
-              - condition: state
-                entity_id: switch.invertor_220_in
-                state: "on"
-              - condition: template
-                value_template: >
-                  {{ not is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Priority') }}
-            then:
-              - action: switch.turn_off
-                target:
-                  entity_id: switch.invertor_220_in
-          - stop: "Вихід інвертора вже у режимі PV-Battery-Utility, додаткові дії та сповіщення не потрібні."
+          - stop: "Вихід інвертора вже у режимі PV-Battery-Utility. Зайві дії скасовано."
 
-      # Крок 1: Зміна пріоритету виходу інвертора на АКБ/СЕС
       - action: select.select_option
         target:
           entity_id: select.anenji_anj_11kw_48v_wifi_p_output_source_priority
         data:
           option: "PV-Battery-Utility"
-
-      # Затримка для стабілізації роботи
       - delay:
-          seconds: 30
+          seconds: 10
 
-      # Крок 2: Відключення вхідного реле, якщо не проводиться заряд від мережі
-      - if:
-          - condition: template
-            value_template: >
-              {{ not is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Priority') }}
-        then:
-          - action: switch.turn_off
-            target:
-              entity_id: switch.invertor_220_in
-
-      - delay:
-          seconds: 30
-
-      # Контрольна перевірка та сповіщення користувача
       - if:
           - condition: template
             value_template: >
@@ -285,180 +993,834 @@ script:
               title: "⚠️ Помилка переключення виходу Anenji"
               message: "Пріоритет виходу НЕ змінився на 'PV-Battery-Utility'!"
         else:
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.output_mode_reason
+            data:
+              value: "{{ (reason | default('Ручне перемикання (кнопка на дашборді)'))[:255] }}"
           - action: persistent_notification.create
             data:
               title: "✅ Успішне повернення на СОНЦЕ/АКБ"
-              message: "Вихід інвертора переключено на 'PV-Battery-Utility'. DIN-реле вимкнено (SOC: {{ states('sensor.bms_battery_state_of_charge') }}%)."
+              message: >
+                Вихід інвертора переключено на 'PV-Battery-Utility'.
+                Ініціатор / Причина: {{ (reason | default('👤 Ручне перемикання (кнопка на дашборді)')) }}
 
-  # Запуск примусового/планового заряду АКБ від мережі
   start_grid_charge:
     alias: "[Anenji] Запуск зарядки АКБ від мережі"
     icon: mdi:battery-charging-100
+    mode: single
     sequence:
-      # Подача 220В на вхід інвертора
-      - action: switch.turn_on
-        target:
-          entity_id: switch.invertor_220_in
+      # РЕЛЕ ВМИКАЄТЬСЯ ДЛЯ ЗАРЯДУ, ТІЛЬКИ ЯКЩО АКТИВНИЙ АВТО-КОНТРОЛЬ:
+      - if:
+          - condition: state
+            entity_id: input_boolean.auto_control_din_relay
+            state: "on"
+          - condition: state
+            entity_id: switch.invertor_220_in
+            state: "off"
+        then:
+          - action: switch.turn_on
+            target:
+              entity_id: switch.invertor_220_in
+          - action: persistent_notification.create
+            data:
+              title: "🔌 DIN-реле мережі увімкнено автоматично"
+              message: >
+                switch.invertor_220_in було вимкнено — увімкнено автоматично
+                для можливості заряду АКБ від мережі.
+          - delay:
+              seconds: 5
 
-      # Очікування появи напруги в мережі (до 30 сек)
-      - wait_template: >
-          {{ states('sensor.anenji_anj_11kw_48v_wifi_p_grid_voltage') | float(0) > 180 }}
-        timeout: "00:00:30"
-        continue_on_timeout: true
+      # ВИПРАВЛЕННЯ (уточнено користувачем): перевірку напруги мережі
+      # прибрано і тут — тим самим принципом, що й у switch_to_grid_bypass
+      # (п.5): інвертор сам коректно обробляє відсутність мережі, додаткова
+      # програмна перевірка перед стартом заряду зайва.
 
-      # Перевірка на випадок відсутності напруги (Блекаут)
       - if:
           - condition: template
             value_template: >
-              {{ states('sensor.anenji_anj_11kw_48v_wifi_p_grid_voltage') | float(0) <= 180 }}
+              {{ is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Priority') or is_state('sensor.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Priority') }}
         then:
-          - action: persistent_notification.create
-            data:
-              title: "⚠️ Зарядку скасовано"
-              message: "DIN-реле увімкнено, але напруга в міській мережі відсутня (Блекаут). Реле вимкнено."
-          - action: switch.turn_off
-            target:
-              entity_id: switch.invertor_220_in
-          - stop: "Міська мережа відсутня"
+          - stop: "Заряд від мережі вже активний ('PV Priority'). Зайві команди не потрібні."
 
-      # Налаштування пріоритету зарядки та обмеження струму
       - action: select.select_option
         target:
           entity_id: select.anenji_anj_11kw_48v_wifi_p_charge_source_priority
         data:
           option: "PV Priority"
-
       - action: number.set_value
         target:
           entity_id: number.anenji_anj_11kw_48v_wifi_p_max_ac_charge_current
         data:
           value: "{{ states('input_number.max_ac_charge_current') | int(15) }}"
-
       - delay:
-          seconds: 30
+          seconds: 10
 
-      # Фіксація результату
       - if:
           - condition: template
             value_template: >
-              {{ not is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Priority') }}
+              {{ not is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Priority') and not is_state('sensor.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Priority') }}
         then:
           - action: persistent_notification.create
             data:
-              title: "⚠️ Помилка налаштування Anenji"
-              message: "Пріоритет зарядки НЕ змінився на 'PV Priority'!"
+              title: "⚠️ Помилка запуску заряду від мережі"
+              message: "Пріоритет заряду НЕ змінився на 'PV Priority'!"
         else:
           - action: persistent_notification.create
             data:
-              title: "🔌 Успішно розпочато зарядку від мережі"
-              message: "Пріоритет зарядки встановлено на 'PV Priority', струм заряду: {{ states('input_number.max_ac_charge_current') }}A."
+              title: "✅ Заряд АКБ від мережі розпочато"
+              message: >
+                Пріоритет заряду встановлено на 'PV Priority', струм заряду
+                від мережі: {{ states('input_number.max_ac_charge_current') }} А.
 
-  # Безпечна зупинка зарядки від мережі
   stop_grid_charge:
     alias: "[Anenji] Зупинка зарядки АКБ від мережі"
     icon: mdi:battery-charging-off
     mode: single
     sequence:
-      # Якщо вже в режимі PV Only і реле вимкнено — пропускаємо
       - if:
           - condition: template
             value_template: >
-              {{ is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Only') and is_state('switch.invertor_220_in', 'off') }}
+              {{ is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Only') or is_state('sensor.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Only') }}
         then:
-          - stop: "Інвертор вже у режимі PV Only та DIN-реле вимкнено. Зайві команди не надсилалися."
+          - stop: "Заряд від мережі вже зупинено ('PV Only')."
 
-      # Вимкнення DIN-реле
-      - action: switch.turn_off
-        target:
-          entity_id: switch.invertor_220_in
-
-      - delay:
-          seconds: 5
-
-      # Переключення джерела заряду виключно на сонячні панелі
       - action: select.select_option
         target:
           entity_id: select.anenji_anj_11kw_48v_wifi_p_charge_source_priority
         data:
           option: "PV Only"
-
       - delay:
           seconds: 5
 
-      # Сповіщення про результати
       - if:
           - condition: template
             value_template: >
-              {{ is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Only') and is_state('switch.invertor_220_in', 'off') }}
+              {{ not is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Only') and not is_state('sensor.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Only') }}
         then:
           - action: persistent_notification.create
             data:
-              title: "🛑 Зарядку від мережі зупинено"
-              message: "Пріоритет зарядки повернуто на 'PV Only', DIN-реле мережі вимкнено."
+              title: "⚠️ Помилка зупинки заряду від мережі"
+              message: "Пріоритет заряду НЕ змінився на 'PV Only'!"
         else:
           - action: persistent_notification.create
             data:
-              title: "⚠️ Зауваження при зупинці зарядки"
-              message: "Пріоритет зарядки або стан DIN-реле потребують додаткової перевірки."
+              title: "✅ Заряд АКБ від мережі зупинено"
+              message: "Пріоритет заряду повернуто на 'PV Only'."
 
-  # Встановлення максимального струму сонячного заряду з підтвердженням від інвертора
   set_solar_charge_current:
     alias: "[Anenji] Встановлення струму заряду СЕС з підтвердженням"
-    mode: queued
+    mode: single # Змінено з queued, щоб не спамити
     sequence:
+      - variables:
+          previous_current: "{{ states('number.anenji_anj_11kw_48v_wifi_p_max_charge_current') | int(0) }}"
+          new_current: "{{ target_current | int(30) }}"
+          # ДОДАНО (за проханням користувача): поточний стан АКБ у
+          # сповіщеннях про струм заряду СЕС — раніше показувало лише
+          # "змінено з X на Y", без жодного контексту стану батареї.
+          battery_status: >-
+            {{ states('sensor.bms_battery_state_of_charge') | round(0) }}% ({{ states('sensor.bms_battery_remaining_kwh') | float(0) | round(1) }} кВт·год)
+
+      - if:
+          - condition: template
+            value_template: "{{ previous_current == new_current }}"
+        then:
+          - stop: "Струм заряду вже встановлено на потрібне значення."
+
       - action: number.set_value
         target:
           entity_id: number.anenji_anj_11kw_48v_wifi_p_max_charge_current
         data:
-          value: "{{ target_current }}"
+          value: "{{ new_current }}"
+      - delay:
+          seconds: 8
 
-      # Очікування оновлення значення в Modbus
-      - wait_template: >
-          {{ states('number.anenji_anj_11kw_48v_wifi_p_max_charge_current') | int(0) == target_current | int(0) }}
-        timeout: "00:00:30"
+      # ВИПРАВЛЕННЯ: хмарний Wi-Fi модуль Anenji інколи підтверджує зміну
+      # довше, ніж за 8 секунд (round-trip через хмару постачальника), через
+      # що траплялись хибні сповіщення про помилку, хоча команда фактично
+      # застосовувалась трохи пізніше. Тепер перед тим, як визнати спробу
+      # невдалою, скрипт повторює команду ще раз і чекає довше.
+      - if:
+          - condition: template
+            value_template: >
+              {{ states('number.anenji_anj_11kw_48v_wifi_p_max_charge_current') | int(-1) != new_current }}
+        then:
+          - action: number.set_value
+            target:
+              entity_id: number.anenji_anj_11kw_48v_wifi_p_max_charge_current
+            data:
+              value: "{{ new_current }}"
+          - delay:
+              seconds: 15
 
       - if:
           - condition: template
             value_template: >
-              {{ states('number.anenji_anj_11kw_48v_wifi_p_max_charge_current') | int(0) == target_current | int(0) }}
+              {{ states('number.anenji_anj_11kw_48v_wifi_p_max_charge_current') | int(-1) != new_current }}
         then:
           - action: persistent_notification.create
             data:
-              title: "✅ Струм заряду Anenji змінено"
-              message: "Успішно встановлено струм {{ target_current }}А (Прогноз: {{ states('sensor.volcast_solar_forecast_energy_forecast_today') }} kWh, SOC: {{ states('sensor.bms_battery_state_of_charge') }}%)."
+              title: "⚠️ Помилка встановлення струму заряду СЕС"
+              message: >
+                Не вдалось встановити струм заряду {{ new_current }} А після
+                двох спроб (поточне значення:
+                {{ states('number.anenji_anj_11kw_48v_wifi_p_max_charge_current') }} А).
+                Заряд АКБ: {{ battery_status }}.
         else:
           - action: persistent_notification.create
             data:
-              title: "❌ Помилка налаштування струму Anenji"
-              message: "Не вдалося виставити струм {{ target_current }}А! Поточне значення: {{ states('number.anenji_anj_11kw_48v_wifi_p_max_charge_current') }}А."
+              title: "🔆 Струм заряду СЕС оновлено"
+              message: "Струм заряду змінено з {{ previous_current }} А на {{ new_current }} А. Заряд АКБ: {{ battery_status }}."
 
-# ------------------------------------------------------------------------------
-# 4. АВТОМАТИЗАЦІЇ (AUTOMATIONS)
-# ------------------------------------------------------------------------------
+  # ==============================================================================
+  # НОВИЙ СКРИПТ: AI-ОЦІНКА ТА ВИБІР РЕЖИМУ ВИХОДУ ІНВЕРТОРА (JEV AI)
+  # ==============================================================================
+  # Модель HA-Jev приймає зважене рішення щодо режиму виходу (Сонце / Мережа)
+  # з урахуванням 3-х пікових вікон (07-10, 11-13, 17-19) та сезону (опалювальний
+  # vs неопалювальний).
+  # ⚠️ Заряд від мережі залишається недоторканим і підконтрольним лише input_boolean.allow_grid_charge.
+  jev_evaluate_output_mode:
+    alias: "[Jev AI] Оцінка та вибір режиму виходу інвертора"
+    mode: single
+    fields:
+      phase:
+        description: "Фаза добового циклу (morning_07, lunch_11, afternoon_13, evening_17, night_23, manual)"
+        example: "morning_07"
+        default: "manual"
+    sequence:
+      - variables:
+          season_mode: "{{ 'heating' if is_state('binary_sensor.heating_season', 'on') else 'non_heating' }}"
+          tariff_type: "{{ 'flat_rate_heating' if is_state('binary_sensor.heating_season', 'on') else 'day_peak_double_price' }}"
+          soc: "{{ states('sensor.bms_battery_state_of_charge') | float(0) | round(1) }}"
+          batt_rem_kwh: "{{ states('sensor.bms_battery_remaining_kwh') | float(0) | round(2) }}"
+          min_reserve_kwh: >-
+            {% if is_state('input_boolean.blackout_saving_mode', 'on') or is_state('input_boolean.max_battery_mode', 'on') %}
+              {{ states('input_number.blackout_reserve_kwh') | float(8.0) | round(2) }}
+            {% else %}
+              {{ states('input_number.min_target_reserve_kwh') | float(2.0) | round(2) }}
+            {% endif %}
+          calc_reserve_kwh: "{{ states('sensor.calculated_target_reserve_kwh') | float(3.0) | round(2) }}"
+          batt_slack_kwh: "{{ [batt_rem_kwh - min_reserve_kwh, 0] | max | round(2) }}"
+          pv_power_w: "{{ states('sensor.anenji_anj_11kw_48v_wifi_p_pv_power') | float(0) | round(0) }}"
+          load_power_w: "{{ states('sensor.anenji_anj_11kw_48v_wifi_p_load_power') | float(0) | round(0) }}"
+          pv_forecast_today_kwh: "{{ (states('sensor.volcast_solar_forecast_energy_forecast_today') | float(0) * (states('input_number.solar_forecast_calibration_factor') | float(1.0))) | round(2) }}"
+          pv_forecast_rem_kwh: "{{ (states('sensor.volcast_solar_forecast_solar_forecast_remaining_today') | float(0) * (states('input_number.solar_forecast_calibration_factor') | float(1.0))) | round(2) }}"
+          pv_forecast_tomorrow_kwh: "{{ (states('sensor.volcast_solar_forecast_energy_forecast_tomorrow') | float(0) * (states('input_number.solar_forecast_calibration_factor') | float(1.0))) | round(2) }}"
+          current_output_mode: "{{ 'grid' if is_state('input_boolean.output_on_grid', 'on') else 'solar' }}"
+          p_input: "{{ phase | default('manual') }}"
+          current_h: "{{ now().hour }}"
+          batt_capacity_kwh: "{{ states('sensor.bms_battery_full_capacity_kwh') | float(9.59) }}"
+          min_reserve_soc: "{{ ((min_reserve_kwh / (batt_capacity_kwh if batt_capacity_kwh > 0 else 9.59)) * 100.0) | round(0) }}"
+          morning_solar_ready_soc: "{{ [min_reserve_soc + 4, 20] | max | round(0) }}"
+          morning_depleted_soc: "{{ [min_reserve_soc + 2, 18] | max | round(0) }}"
+          morning_target_soc: "{{ states('input_number.morning_battery_remaining') | float(40.0) }}"
+          # Оцінка нічного споживання за 8 годин (23:00-07:00).
+          # При навантаженні > 1200W (короткочасний пік) обмежуємо 4.5 кВт·год, мінімум 1.2 кВт·год для надійності:
+          night_est_cons_kwh: >-
+            {% set raw_night_cons = (load_power_w * 8.0) / 1000.0 %}
+            {{ ([[raw_night_cons, 1.2] | max, 4.5] | min | round(2)) if load_power_w > 1200 else ([raw_night_cons, 1.2] | max | round(2)) }}
+          night_est_soc_drop: "{{ ((night_est_cons_kwh / (batt_capacity_kwh if batt_capacity_kwh > 0 else 9.59)) * 100.0) | round(1) }}"
+          projected_morning_soc: "{{ [soc - night_est_soc_drop, 0] | max | round(1) }}"
+          morning_slack_soc: "{{ (projected_morning_soc - morning_target_soc) | round(1) }}"
+          is_max_battery_mode: "{{ is_state('input_boolean.max_battery_mode', 'on') }}"
+          is_blackout_mode: "{{ is_state('input_boolean.blackout_saving_mode', 'on') }}"
+          max_battery_balance_kwh: "{{ states('sensor.max_battery_trajectory_balance') | float(0) }}"
+          eff_phase: >-
+            {% if p_input not in ['manual', ''] and p_input is defined and p_input is not none %}
+              {{ p_input }}
+            {% else %}
+              {% if current_h >= 7 and current_h < 11 %}morning_07
+              {% elif current_h >= 11 and current_h < 13 %}lunch_11
+              {% elif current_h >= 13 and current_h < 17 %}afternoon_13
+              {% elif current_h >= 17 and current_h < 23 %}evening_17
+              {% else %}night_23{% endif %}
+            {% endif %}
+          is_manual: "{{ p_input in ['manual', ''] or p_input is not defined or p_input is none }}"
+          phase_name: >-
+            {% set pfx = '🕹️ Вручну (' ~ now().strftime('%H:%M') ~ '): ' if is_manual else '' %}
+            {% set hour_str = now().strftime('%H:00') %}
+            {% if eff_phase == 'morning_07' %}{{ pfx }}🌅 Ранок ({{ hour_str }}, вікно 07-10)
+            {% elif eff_phase == 'lunch_11' %}{{ pfx }}☀️ Обід ({{ hour_str }}, вікно 11-13)
+            {% elif eff_phase == 'afternoon_13' %}{{ pfx }}🔋 Після обіду ({{ hour_str }}, підготовка до вечора)
+            {% elif eff_phase == 'evening_17' %}{{ pfx }}🌆 Вечір ({{ hour_str }}, вікно 17-19)
+            {% elif eff_phase == 'night_23' %}{{ pfx }}🌙 Ніч (23:00, нічний тариф)
+            {% else %}{{ pfx }}⚙️ Оцінка за вимогою{% endif %}
+
+          instructions_text: >-
+            Choose whether inverter output priority should be 'solar' (PV-Battery-Utility) or 'grid' (PV-Utility-Battery).
+            CRITICAL OBJECTIVES & SEASON LOGIC:
+            - IN NON-HEATING SEASON: Daytime electricity (07:00-23:00) is TWICE as expensive as nighttime (23:00-07:00). Maximize 'solar' throughout the day to avoid peak grid charges.
+            - IN HEATING SEASON: Tariff is flat, but battery must cover the 3 critical peak consumption windows: Morning (07-10), Lunch (11-13), Evening (17-19).
+            - GOLDEN RULE (DAYTIME 07:00-17:00):
+              * IN NON-HEATING SEASON: Daytime grid is 2x expensive! Always choose 'solar' whenever PV >= 400W or Battery SOC >= 35%.
+              * IN HEATING SEASON: Flat tariff! Choose 'solar' if Solar is actively generating (PV >= 400W or PV >= House Load). BUT if PV is absent and today's total solar forecast is poor (< 5.0 kWh), do NOT drain battery during daytime without sun — choose 'grid' to preserve battery for essential backup and peaks.
+
+            SPECIFIC TIME WINDOW RULES:
+            1. 🌅 MORNING WINDOW (07:00, peak 07:00-10:00):
+               - Goal: Buffer morning peak with battery if sun will recharge it later, OR preserve battery on grid if day will be overcast.
+               - IN HEATING SEASON (flat tariff):
+                 * Choose 'grid' if today's solar forecast is poor (< 5.0 kWh) AND current PV is not yet generating (< 300W), in order to preserve battery energy since sun will NOT replenish it today.
+                 * Choose 'solar' if Battery SOC >= {{ morning_solar_ready_soc }}% and usable energy > 0.4 kWh AND (today's solar forecast >= 5.0 kWh or PV is generating >= 300W).
+                 * Choose 'grid' if Battery is depleted (SOC <= {{ morning_depleted_soc }}% or usable energy <= 0.2 kWh).
+               - IN NON-HEATING SEASON (day 2x peak tariff):
+                 * Choose 'solar' if Battery SOC >= {{ morning_solar_ready_soc }}% and usable energy > 0.4 kWh (daytime sun will replenish battery later).
+                 * Choose 'grid' ONLY if Battery is depleted (SOC <= {{ morning_depleted_soc }}% or usable energy <= 0.2 kWh) AND PV is not yet generating (< 300W).
+            2. ☀️ LUNCH WINDOW (11:00, peak 11:00-13:00):
+               - Goal: Maximum solar utilization at midday solar peak.
+               - Choose 'solar' by default if PV is generating (PV >= 350W) or Battery has healthy reserve (SOC >= 40%).
+               - In heating season: Choose 'grid' if weather is bad (PV < 300W and remaining forecast < 2.0 kWh) and Battery SOC < 35% to preserve reserve for evening peak.
+               - In non-heating season: Choose 'grid' ONLY under extreme weather failure (PV < 300W AND Battery SOC <= 25%).
+            3. 🔋 AFTERNOON BRIDGE (13:00, window 13:00-17:00):
+               - Goal: Self-power the house and top up battery for the evening peak.
+               - Choose 'solar' if PV >= 400W OR Battery SOC >= 38% (usable energy > 0.8 kWh).
+               - Choose 'grid' ONLY IF BOTH: PV is absent (< 350W and remaining forecast < 1.5 kWh) AND Battery is low (SOC < 35% or usable energy <= 0.5 kWh) to preserve reserve for 17:00 peak.
+            4. 🌆 EVENING PEAK (17:00, peak 17:00-19:00):
+               - Goal: Cover evening household peak from battery/sunset.
+               - In non-heating season: Day tariff remains 2x expensive until 23:00! Stay on 'solar' as long as battery is above hard reserve {{ min_reserve_kwh }} kWh (SOC > {{ min_reserve_soc }}%).
+               - In heating season: Choose 'solar' if usable energy > 0.4 kWh (SOC >= {{ morning_solar_ready_soc }}%). Choose 'grid' only if battery is already depleted to hard reserve {{ min_reserve_kwh }} kWh (SOC <= {{ min_reserve_soc }}%).
+            5. 🌙 NIGHT WINDOW (23:00, window 23:00-07:00):
+               - Goal: Decide whether to power the house from battery overnight ('solar') or preserve battery on 'grid'.
+               - IN HEATING SEASON (flat tariff):
+                 * Choose 'solar' IF BOTH conditions are met:
+                   a) Current battery charge ({{ soc }}%) is GREATER THAN target slider 'morning_battery_remaining' ({{ morning_target_soc }}%), AND
+                   b) Tomorrow's solar forecast is good (>= 10.0 kWh), ensuring sun will comfortably recharge battery during the day.
+                   Staying on 'solar' powers the house from battery overnight as long as battery is above the morning target (the local safety automation will automatically switch to grid if battery drops to {{ morning_target_soc }}%).
+                 * Choose 'grid' ONLY IF:
+                   a) Current battery charge ({{ soc }}%) is ALREADY LESS THAN OR EQUAL TO target slider ({{ morning_target_soc }}%), OR
+                   b) Tomorrow's solar forecast is low (< 10.0 kWh), in order to preserve battery energy for tomorrow.
+               - IN NON-HEATING SEASON (day 2x peak tariff):
+                 Night grid has 50% discount. Choose 'grid' to preserve battery for the expensive daytime, UNLESS battery has ample excess (SOC >= 80%) AND tomorrow's solar forecast is large (>= 12.0 kWh).
+            * SPECIAL SUB-MODE (Max Battery Mode):
+              If Max Battery Mode is ACTIVE:
+              - The supreme objective is to ensure the battery reaches target reserve ({{ min_reserve_kwh }} kWh / ~{{ min_reserve_soc }}% SOC) before sunset and PRESERVES that charge for maximum backup.
+              - HEATING SEASON SOLAR FORECAST THRESHOLD: In heating season, if today's solar forecast is LESS than 2.5 kWh (forecast_today < 2.5 kWh), ALWAYS choose 'grid' unconditionally. The house must remain on grid to prevent discharging the battery, because total solar energy for the day is insufficient to recharge it, avoiding cyclical switching.
+              - BATTERY TARGET REACHED (SOC >= {{ min_reserve_soc }}% or remaining >= {{ min_reserve_kwh }} kWh):
+                * In heating season: choose 'solar' ONLY IF today's solar forecast is adequate (forecast_today >= 2.5 kWh) AND PV covers >= 70% of house load (PV >= 300W). If forecast_today < 2.5 kWh, stay on 'grid'.
+                * In non-heating season: choose 'solar' if PV >= 300W and PV covers >= 70% of house load.
+              - BATTERY CHARGING PHASE (SOC < {{ min_reserve_soc }}%):
+                * Choose 'grid' if today's forecast < 2.5 kWh in heating season or solar trajectory balance < 0 or PV is insufficient.
+                * Choose 'solar' ONLY IF forecast_today >= 2.5 kWh AND there is a massive solar surplus (trajectory balance >= 1.5 kWh, PV >= load + 500W, and PV >= 1200W).
+              - EVENING / WEAK SUN (17:00-23:00 or PV < 300W):
+                * Choose 'grid' unconditionally so that battery energy accumulated during the day is strictly preserved for night/morning.
+
+          background_text: >-
+            Decision Phase: {{ phase_name }}
+            Season: {{ season_mode }} (Tariff: {{ tariff_type }})
+            Special Sub-Mode: {{ 'Max Battery Mode ACTIVE (Target: ' ~ min_reserve_kwh ~ ' kWh / ' ~ min_reserve_soc ~ '% by sunset via Solar, balance: ' ~ max_battery_balance_kwh ~ ' kWh)' if is_max_battery_mode else ('Blackout Mode ACTIVE (Target: ' ~ min_reserve_kwh ~ ' kWh)' if is_blackout_mode else ('Max Solar/Aggressive Mode ACTIVE' if is_state('input_boolean.max_solar_battery_mode', 'on') else 'Normal Balanced Mode')) }}
+            Battery: {{ soc }}% ({{ batt_rem_kwh }} kWh total, {{ batt_slack_kwh }} kWh usable above {{ min_reserve_kwh }} kWh / {{ min_reserve_soc }}% hard reserve, morning solar threshold: {{ morning_solar_ready_soc }}%)
+            Power Flow: Current PV {{ pv_power_w }}W vs Current Load {{ load_power_w }}W
+            Night Energy Balance (23:00-07:00): Current SOC {{ soc }}% vs Target Morning Slider: {{ morning_target_soc }}% (Surplus above morning target: {{ '+' if (soc - morning_target_soc) > 0 else '' }}{{ (soc - morning_target_soc) | round(1) }}%). Estimated night consumption {{ night_est_cons_kwh }} kWh (~{{ night_est_soc_drop }}% drop), projected morning SOC at 07:00: {{ projected_morning_soc }}%.
+            Solar Forecast: today remaining {{ pv_forecast_rem_kwh }} kWh (day total {{ pv_forecast_today_kwh }} kWh), tomorrow {{ pv_forecast_tomorrow_kwh }} kWh
+            Peak Windows: Morning (07:00-10:00), Lunch (11:00-13:00), Evening (17:00-19:00)
+            Current Inverter Mode: {{ current_output_mode }}
+
+      - action: jev.choice
+        response_variable: jev_result
+        continue_on_error: true
+        data:
+          state: "{{ background_text }}"
+          instructions: "{{ instructions_text }}"
+          options:
+            - "solar"
+            - "grid"
+          option_descriptions:
+            solar: "Power home from Solar and Battery (PV-Battery-Utility)"
+            grid: "Power home primarily from Grid (PV-Utility-Battery)"
+
+      # ОБРОБКА РЕЗУЛЬТАТУ ТА ФОЛБЕК
+      - if:
+          - condition: template
+            value_template: >
+              {{ jev_result is not defined or jev_result is none or (jev_result.get('choice') | default('')) not in ['solar', 'grid'] }}
+        then:
+          - action: persistent_notification.create
+            data:
+              notification_id: "jev_ai_decision"
+              title: "⚠️ [Jev AI] Збій відповіді моделі"
+              message: >
+                Модель Jev не відповіла або повернула некоректний результат для фази {{ phase_name }}.
+                Застосовано захисний фолбек: система обирає безпечний режим відповідно до фази та заряду АКБ.
+          # ФОЛБЕК ДЛЯ РАНКУ: якщо 07:00 і АКБ має хороший заряд (>32% і > резерву) та прогноз/сонце в нормі — переходимо на сонце
+          - if:
+              - condition: template
+                value_template: >
+                  {{ eff_phase == 'morning_07' and soc >= 32 and batt_rem_kwh > (min_reserve_kwh + 0.5) and not (is_max_battery_mode and season_mode == 'heating' and pv_forecast_today_kwh < 2.5) and (
+                    season_mode == 'non_heating' or pv_forecast_today_kwh >= 5.0 or pv_power_w >= 300
+                  ) }}
+            then:
+              - action: script.switch_to_solar_bypass
+                data:
+                  reason: "⚠️ Фолбек Jev (07:00): АКБ {{ soc }}% > 32% та прогноз/генерація в нормі, перехід на Сонце"
+          # ФОЛБЕК ДЛЯ ОБІДУ/ДНЯ: якщо вдень є запас в АКБ або сонце активне — переходимо на сонце
+          - if:
+              - condition: template
+                value_template: "{{ eff_phase in ['lunch_11', 'afternoon_13'] and (batt_slack_kwh > 0.5 or pv_power_w > 500) and not (is_max_battery_mode and season_mode == 'heating' and pv_forecast_today_kwh < 2.5) }}"
+            then:
+              - action: script.switch_to_solar_bypass
+                data:
+                  reason: "⚠️ Фолбек Jev ({{ eff_phase }}): генерація {{ pv_power_w }}W / АКБ {{ soc }}%, перехід на Сонце за замовчуванням"
+          # ФОЛБЕК ДЛЯ ВЕЧОРА: якщо 17:00 і є запас в АКБ — переходимо на сонце для вечірнього піку (крім режиму Максимум АКБ)
+          - if:
+              - condition: template
+                value_template: "{{ eff_phase == 'evening_17' and soc >= 32 and batt_slack_kwh > 0.5 and not is_max_battery_mode }}"
+            then:
+              - action: script.switch_to_solar_bypass
+                data:
+                  reason: "⚠️ Фолбек Jev (17:00): АКБ {{ soc }}% (вільно {{ batt_slack_kwh }} кВт·год), сонце/АКБ для вечірнього піку"
+          - if:
+              - condition: template
+                value_template: "{{ eff_phase == 'evening_17' and is_max_battery_mode }}"
+            then:
+              - action: script.switch_to_grid_bypass
+                data:
+                  reason: "⚠️ Фолбек Jev (17:00, Максимум АКБ): збереження заряду АКБ ({{ soc }}%), дім на мережі"
+          # ФОЛБЕК ДЛЯ НОЧІ: о 23:00 за наявності запасу над ранковим рівнем та гарного прогнозу залишаємось на АКБ
+          - if:
+              - condition: template
+                value_template: >
+                  {{ eff_phase == 'night_23' and (
+                    (season_mode == 'heating' and soc > morning_target_soc and pv_forecast_tomorrow_kwh >= 10.0)
+                    or (season_mode == 'non_heating' and soc >= 85 and pv_forecast_tomorrow_kwh >= 12.0)
+                  ) }}
+            then:
+              - action: script.switch_to_solar_bypass
+                data:
+                  reason: "⚠️ Фолбек Jev (23:00): АКБ {{ soc }}% > цілі {{ morning_target_soc }}% та прогноз на завтра {{ pv_forecast_tomorrow_kwh }} кВт·год, залишаємось на АКБ"
+            else:
+              - if:
+                  - condition: template
+                    value_template: "{{ eff_phase == 'night_23' }}"
+                then:
+                  - action: script.switch_to_grid_bypass
+                    data:
+                      reason: "⚠️ Фолбек Jev (23:00): перехід на мережу для збереження АКБ на ранок (АКБ {{ soc }}% / ціль {{ morning_target_soc }}%)"
+        else:
+          - variables:
+              chosen: "{{ jev_result.get('choice') }}"
+              prob_solar: "{{ (jev_result.get('probabilities', {}).get('solar', 0) * 100) | round(0) }}"
+              prob_grid: "{{ (jev_result.get('probabilities', {}).get('grid', 0) * 100) | round(0) }}"
+              confidence_pct: "{{ ((jev_result.get('confidence') | float(0)) * 100) | round(0) }}"
+              inverter_mode_ukr: "{{ '☀️ СОНЦЕ/АКБ' if chosen == 'solar' else '🔌 МЕРЕЖА' }}"
+              prev_mode_ukr: "{{ '☀️ Сонце' if current_output_mode == 'solar' else '🔌 Мережа' }}"
+              season_desc: "{{ 'Опалювальний (єдиний тариф)' if season_mode == 'heating' else 'Неопалювальний (денний пік 2x)' }}"
+              reason_msg: "🧠 [Jev AI: {{ phase_name }}] вибір {{ chosen }} (Сонце {{ prob_solar }}% / Мережа {{ prob_grid }}%), АКБ {{ soc }}%, PV {{ pv_power_w }}W, Навантаження {{ load_power_w }}W, зал. прогн {{ pv_forecast_rem_kwh }} кВт·год"
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.jev_last_decision
+            data:
+              value: "{{ reason_msg[:255] }}"
+          - action: persistent_notification.create
+            data:
+              notification_id: "jev_ai_decision"
+              title: "🧠 [Jev AI] Рішення: {{ inverter_mode_ukr }}"
+              message: >
+                **Фаза:** {{ phase_name }}
+
+                **Рішення моделі:** {{ inverter_mode_ukr }}
+
+                **Ймовірності:** ☀️ Сонце: {{ prob_solar }}% | 🔌 Мережа: {{ prob_grid }}% (відрив: {{ confidence_pct }}%)
+
+                {% if current_output_mode != chosen %}
+                **Зміна режиму:** {{ prev_mode_ukr }} ➡️ {{ inverter_mode_ukr }}
+                {% else %}
+                **Режим не змінено:** залишається {{ inverter_mode_ukr }}
+                {% endif %}
+
+                🔋 **АКБ:** {{ soc }}% ({{ batt_rem_kwh }} кВт·год total, вільно {{ batt_slack_kwh }} кВт·год над мін. резервом {{ min_reserve_kwh }} кВт·год, цільовий: {{ calc_reserve_kwh }} кВт·год)
+                {% if eff_phase == 'night_23' or (current_h >= 23 or current_h < 7) %}
+
+                🌙 **Нічний прогноз:** поточний заряд {{ soc }}% (ціль слайдера на ранок: {{ morning_target_soc }}%, запас: {{ '+' if (soc - morning_target_soc) > 0 else '' }}{{ (soc - morning_target_soc) | round(1) }}%), очікуваний на 07:00: {{ projected_morning_soc }}%
+                {% endif %}
+
+                ⚡ **Потужність:** Навантаження {{ load_power_w }} Вт | СЕС {{ pv_power_w }} Вт
+
+                ☀️ **Прогноз СЕС:** сьогодні {{ pv_forecast_today_kwh }} кВт·год (залишилось {{ pv_forecast_rem_kwh }} кВт·год) | на завтра {{ pv_forecast_tomorrow_kwh }} кВт·год
+
+                🗓️ **Сезон:** {{ season_desc }}
+          - if:
+              - condition: template
+                value_template: "{{ chosen == 'solar' }}"
+            then:
+              # ЗАХИСНИЙ ФІЛЬТР ДЛЯ НОЧІ: блокувати сонце вночі ТІЛЬКИ якщо поточний заряд вже нижче цілі або прогноз на завтра < 10 кВт·год
+              - if:
+                  - condition: template
+                    value_template: >
+                      {{ (current_h >= 23 or current_h < 7) and (
+                        (season_mode == 'heating' and (soc <= morning_target_soc or pv_forecast_tomorrow_kwh < 10.0))
+                        or (season_mode == 'non_heating' and (soc < 75 or pv_forecast_tomorrow_kwh < 12.0))
+                      ) }}
+                then:
+                  - action: persistent_notification.create
+                    data:
+                      notification_id: "jev_ai_guard"
+                      title: "🛡️ [Захист] Нічний перехід на Сонце відхилено"
+                      message: >
+                        Модель Jev обрала 'solar' вночі (о {{ current_h }}:00), але
+                        {% if season_mode == 'heating' %}
+                        поточний заряд АКБ ({{ soc }}%) вже досяг або нижчий за цільовий рівень слайдера ({{ morning_target_soc }}%) або прогноз на завтра слабкий ({{ pv_forecast_tomorrow_kwh }} кВт·год < 10.0).
+                        {% else %}
+                        заряд АКБ становить {{ soc }}% (у неопалювальний сезон діє нічний тариф -50%).
+                        {% endif %}
+                        Задля збереження заряду на ранок дію змінено на МЕРЕЖУ.
+                  - action: script.switch_to_grid_bypass
+                    data:
+                      reason: "🛡️ Нічний захист: АКБ збережено для ранку (АКБ {{ soc }}% <= цілі {{ morning_target_soc }}% або прогноз < 10)"
+                else:
+                  # ЗАХИСТ ВІД ГЛИБОКОГО РОЗРЯДУ: якщо АКБ вже на межі резерву
+                  # У суб-режимі "Максимум АКБ" вдень при профіциті балансу дозарядом керує математична модель,
+                  # тому вартівник не блокує Сонце через нічний слайдер резерву, а захищає лише від аварійного розряду (<=20%).
+                  - if:
+                      - condition: template
+                        value_template: >-
+                          {% if is_max_battery_mode and season_mode == 'heating' and pv_forecast_today_kwh < 2.5 %}
+                            true
+                          {% elif is_max_battery_mode and current_h >= 8 and current_h < 17 and max_battery_balance_kwh >= 0 %}
+                            {{ soc <= 20 }}
+                          {% else %}
+                            {{ soc <= min_reserve_soc or batt_rem_kwh <= min_reserve_kwh or soc <= 18 }}
+                          {% endif %}
+                    then:
+                      - action: persistent_notification.create
+                        data:
+                          notification_id: "jev_ai_guard"
+                          title: "🛡️ [Захист] Перехід на Сонце заблоковано"
+                          message: >
+                            {% if is_max_battery_mode and season_mode == 'heating' and pv_forecast_today_kwh < 2.5 %}
+                              У режимі Максимум АКБ (опалювальний сезон) прогноз генерації СЕС на сьогодні ({{ pv_forecast_today_kwh }} кВт·год) менший за 2.5 кВт·год.
+                              Система залишається на МЕРЕЖІ для збереження заряду АКБ.
+                            {% else %}
+                              Модель Jev обрала 'solar', але заряд АКБ ({{ soc }}%, {{ batt_rem_kwh }} кВт·год) досяг мінімального резерву ({{ min_reserve_kwh }} кВт·год / {{ min_reserve_soc }}%).
+                              Система переведена на МЕРЕЖУ для захисту АКБ.
+                            {% endif %}
+                      - action: script.switch_to_grid_bypass
+                        data:
+                          reason: >-
+                            {% if is_max_battery_mode and season_mode == 'heating' and pv_forecast_today_kwh < 2.5 %}
+                              🔋 [Максимум АКБ] Опалювальний сезон: прогноз СЕС {{ pv_forecast_today_kwh }} кВт·год < 2.5 кВт·год — утримання на мережі.
+                            {% else %}
+                              🛡️ Захист резерву: АКБ {{ soc }}% <= резерву {{ min_reserve_kwh }} кВт·год ({{ min_reserve_soc }}%)
+                            {% endif %}
+                    else:
+                      - action: script.switch_to_solar_bypass
+                        data:
+                          reason: "{{ reason_msg }}"
+            else:
+              # ЗАХИСНИЙ ФІЛЬТР ДЛЯ ДНЯ: утримання на Сонці ТІЛЬКИ якщо система вже на Сонці,
+              # і генерація СЕС покриває навантаження або АКБ вище мінімального резерву.
+              # У режимі Максимум АКБ не блокує перехід на мережу, доки АКБ не зарядилась до цільового резерву.
+              # Ніколи не перемикає з мережі на сонце всупереч рішенню моделі Jev!
+              - if:
+                  - condition: template
+                    value_template: >
+                      {{ current_output_mode == 'solar' and current_h >= 7 and current_h < 17 and not (is_max_battery_mode and season_mode == 'heating' and pv_forecast_today_kwh < 2.5) and (
+                        (not is_state('input_boolean.max_battery_mode', 'on') or soc >= min_reserve_soc or batt_rem_kwh >= min_reserve_kwh) and (
+                          (pv_power_w >= load_power_w and pv_power_w >= 300)
+                          or (pv_power_w >= 500 and batt_rem_kwh > min_reserve_kwh and soc > min_reserve_soc)
+                        )
+                      ) }}
+                then:
+                  - action: persistent_notification.create
+                    data:
+                      notification_id: "jev_ai_guard"
+                      title: "🛡️ [Захист] Перехід на мережу заблоковано"
+                      message: >
+                        Модель Jev запропонувала перехід на мережу о {{ current_h }}:00, але система вже на Сонці і діє денна генерація (СЕС {{ pv_power_w }} Вт vs навантаження {{ load_power_w }} Вт, АКБ {{ soc }}% / резерв {{ min_reserve_kwh }} кВт·год).
+                        Система залишається на СОНЦІ.
+                  - action: script.switch_to_solar_bypass
+                    data:
+                      reason: "🛡️ Захист утримав 'solar': СЕС {{ pv_power_w }}W vs {{ load_power_w }}W, АКБ {{ soc }}% > резерву"
+                else:
+                  - action: script.switch_to_grid_bypass
+                    data:
+                      reason: "{{ reason_msg }}"
+
 automation:
-  # Динамічна адаптація струму заряду СЕС залежно від SOC (з урахуванням меж 81%-85% 20A, 86%-100% 10A)
+  # ВИПРАВЛЕННЯ (п.6, повторно): template `number:` з динамічним max
+  # (min_target_reserve_kwh_dynamic) синтаксично коректний, але фактично НЕ
+  # створювався у вашій установці HA (можливо, версія HA не підтримує
+  # динамічний max/min для template number, або є інша несумісність) —
+  # сутність була "привидом" на дашборді. Замінено на надійніший підхід:
+  # звичайна автоматизація стежить за input_number.min_target_reserve_kwh і
+  # sensor.bms_battery_full_capacity_kwh і АКТИВНО повертає значення назад у
+  # межі реальної ємності АКБ, якщо користувач виставив забагато, з
+  # поясненням у сповіщенні. Це не заважає рухати повзунок — просто
+  # "відбиває" значення назад, якщо воно виходить за фізичну межу.
+  # НОВА ФУНКЦІЯ: взаємовиключення "Максимум Сонця/АКБ" і "Блекаут/Економія
+  # АКБ" — два протилежних за філософією режими (перший каже "не жалій АКБ,
+  # використовуй максимально", другий — "економ АКБ максимально") не мають
+  # сенсу увімкненими одночасно. Вмикання одного вимикає інший, обидва
+  # напрямки. mode: queued (а не single), щоб гарантовано обробити обидва
+  # тригери, навіть якщо вони спрацюють практично одночасно.
+  - id: exclusive_mode_switches
+    alias: "Автоматизація: Взаємовиключення режимів Максимум Сонця / Блекаут / Максимум АКБ"
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: input_boolean.max_solar_battery_mode
+        to: "on"
+        id: max_solar_on
+      - platform: state
+        entity_id: input_boolean.blackout_saving_mode
+        to: "on"
+        id: blackout_on
+      - platform: state
+        entity_id: input_boolean.max_battery_mode
+        to: "on"
+        id: max_battery_on
+    condition:
+      - condition: state
+        entity_id: input_boolean.package_automations_enabled
+        state: "on"
+    action:
+      - choose:
+          - conditions:
+              - condition: trigger
+                id: max_solar_on
+            sequence:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id:
+                    - input_boolean.blackout_saving_mode
+                    - input_boolean.max_battery_mode
+          - conditions:
+              - condition: trigger
+                id: blackout_on
+            sequence:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id:
+                    - input_boolean.max_solar_battery_mode
+                    - input_boolean.max_battery_mode
+          - conditions:
+              - condition: trigger
+                id: max_battery_on
+            sequence:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id:
+                    - input_boolean.max_solar_battery_mode
+                    - input_boolean.blackout_saving_mode
+
+  - id: min_reserve_slider_clamp
+    alias: "Автоматизація: Обмеження слайдерів резерву реальною ємністю АКБ"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: input_number.min_target_reserve_kwh
+        id: normal_slider
+      - platform: state
+        entity_id: input_number.blackout_reserve_kwh
+        id: blackout_slider
+      - platform: state
+        entity_id: sensor.bms_battery_full_capacity_kwh
+        id: capacity_changed
+    condition:
+      - condition: state
+        entity_id: input_boolean.package_automations_enabled
+        state: "on"
+      - condition: template
+        value_template: "{{ has_value('sensor.bms_battery_full_capacity_kwh') }}"
+    action:
+      # НОВА ФУНКЦІЯ: розширено з одного слайдера (min_target_reserve_kwh) на
+      # обидва — звичайний і новий blackout_reserve_kwh — той самий принцип
+      # захисту для кожного. Тригер на зміну ємності АКБ (capacity_changed)
+      # перевіряє ОБИДВА слайдери одразу, а не лише той, що спричинив тригер.
+      - repeat:
+          for_each:
+            - entity: input_number.min_target_reserve_kwh
+              label: "Мінімальний резерв АКБ (звичайний режим)"
+            - entity: input_number.blackout_reserve_kwh
+              label: "Резерв АКБ (Блекаут / Максимум АКБ)"
+          sequence:
+            - if:
+                - condition: template
+                  value_template: >
+                    {{ (states(repeat.item.entity) | float(0)) >
+                       (states('sensor.bms_battery_full_capacity_kwh') | float(9999)) }}
+              then:
+                - variables:
+                    requested: "{{ states(repeat.item.entity) | float(0) }}"
+                    clamped: "{{ states('sensor.bms_battery_full_capacity_kwh') | float(10) | round(1) }}"
+                - action: input_number.set_value
+                  target:
+                    entity_id: "{{ repeat.item.entity }}"
+                  data:
+                    value: "{{ clamped }}"
+                - action: persistent_notification.create
+                  data:
+                    title: "⚠️ Слайдер резерву обмежено"
+                    message: >
+                      «{{ repeat.item.label }}»: ви виставили {{ requested }}
+                      кВт·год, що перевищує реальну ємність батареї
+                      ({{ clamped }} кВт·год). Значення автоматично знижено
+                      до ємності батареї.
+
+  # НОВА ФУНКЦІЯ: сповіщення при перемиканні режиму Блекаут/Економія АКБ —
+  # одразу показує, який цільовий резерв активний після зміни (а не чекати,
+  # доки якась інша дія випадково це пояснить).
+  - id: blackout_mode_toggle_notification
+    alias: "Автоматизація: Сповіщення про зміну режиму Блекаут/Економія АКБ"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: input_boolean.blackout_saving_mode
+    condition:
+      - condition: state
+        entity_id: input_boolean.package_automations_enabled
+        state: "on"
+    action:
+      - if:
+          - condition: state
+            entity_id: input_boolean.blackout_saving_mode
+            state: "on"
+        then:
+          - action: persistent_notification.create
+            data:
+              title: "🚨 Режим Блекаут/Економія АКБ: УВІМКНЕНО"
+              message: >
+                Цільовий резерв змінено на
+                {{ states('input_number.blackout_reserve_kwh') }} кВт·год
+                (замість звичайного сезонного розрахунку). Пріоритет —
+                максимальне заряджання АКБ від сонця й мережі, мінімальне
+                використання АКБ на побутові потреби. Поточний заряд:
+                {{ states('sensor.bms_battery_remaining_kwh') | round(1) }}
+                кВт·год.
+        else:
+          - action: persistent_notification.create
+            data:
+              title: "☀️ Режим Блекаут/Економія АКБ: вимкнено"
+              message: >
+                Повернення до звичайного сезонного розрахунку резерву
+                ({{ states('sensor.calculated_target_reserve_kwh') | round(1) }}
+                кВт·год) і звичайного балансу використання сонця/АКБ.
+
+  # НОВА ФУНКЦІЯ: аналогічне сповіщення для протилежного режиму "Максимум
+  # Сонця/АКБ" — той самий принцип, що й для Блекаут/Економія вище.
+  - id: max_solar_mode_toggle_notification
+    alias: "Автоматизація: Сповіщення про зміну режиму Максимум Сонця/АКБ"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: input_boolean.max_solar_battery_mode
+    condition:
+      - condition: state
+        entity_id: input_boolean.package_automations_enabled
+        state: "on"
+    action:
+      - if:
+          - condition: state
+            entity_id: input_boolean.max_solar_battery_mode
+            state: "on"
+        then:
+          - action: persistent_notification.create
+            data:
+              title: "🔆 Режим Максимум Сонця/АКБ: УВІМКНЕНО"
+              message: >
+                Перемикання на сонце тепер відбувається максимально швидко,
+                ігноруючи звичайний цільовий резерв — єдина межа: мінімальний
+                резерв-підстраховка ({{ states('input_number.min_target_reserve_kwh') }}
+                кВт·год). Поточний заряд:
+                {{ states('sensor.bms_battery_remaining_kwh') | round(1) }}
+                кВт·год.
+        else:
+          - action: persistent_notification.create
+            data:
+              title: "⚙️ Режим Максимум Сонця/АКБ: вимкнено"
+              message: >
+                Повернення до звичайного сезонного розрахунку резерву
+                ({{ states('sensor.calculated_target_reserve_kwh') | round(1) }}
+                кВт·год) для рішень про перемикання день/ніч.
+
+  # ВИПРАВЛЕННЯ 3.6: логіка EMA перенесена з self-referencing template-сенсора
+  # сюди. Читає/пише input_number.daily_energy_avg_kwh, яке HA відновлює після
+  # рестарту, тож середнє більше не "скидається в 0" при перезапуску HA.
+  - id: daily_energy_avg_update
+    alias: "Автоматизація: Оновлення персистентного середнього добового споживання"
+    mode: single
+    trigger:
+      - platform: time
+        at: "23:59:00"
+    condition:
+      - condition: state
+        entity_id: input_boolean.package_automations_enabled
+        state: "on"
+    action:
+      - variables:
+          today_total: "{{ states('sensor.overal_in_house_avr_daily_energy') | float(0) }}"
+          prev_avg: "{{ states('input_number.daily_energy_avg_kwh') | float(0) }}"
+          new_avg: >
+            {% if prev_avg == 0 %}
+              {{ today_total | round(2) }}
+            {% elif today_total > 1.0 %}
+              {{ (prev_avg * 0.8 + today_total * 0.2) | round(2) }}
+            {% else %}
+              {{ prev_avg | round(2) }}
+            {% endif %}
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.daily_energy_avg_kwh
+        data:
+          value: "{{ new_avg }}"
+
+  # ==============================================================================
+  # ІСНУЮЧІ БАЗОВІ АВТОМАТИЗАЦІЇ
+  # ==============================================================================
   - id: solar_max_charge_current_control
-    alias: "Автоматизація: Налаштування струму заряду сонячної системи"
-    description: "Змінює number.anenji_anj_11kw_48v_wifi_p_max_charge_current залежно від % SOC, часу доби та залишку прогнозу СЕС."
-    mode: restart
+    alias: "Автоматизація: Налаштування струму заряду сонячної системи (З Гістерезисом)"
+    description: "Змінює струм без осциляцій завдяки буферним зонам."
+    mode: single # Заборона паралельного запуску
     trigger:
       - platform: state
         entity_id: sensor.bms_battery_state_of_charge
       - platform: state
-        entity_id: sensor.bms_battery_soc_calculated
-      - platform: state
         entity_id: sensor.volcast_solar_forecast_solar_forecast_remaining_today
       - platform: state
-        entity_id: select.anenji_anj_11kw_48v_wifi_p_output_source_priority
-        to: "PV-Battery-Utility"
+        entity_id: input_boolean.max_battery_mode
       - platform: state
-        entity_id: sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority
-        to: "PV-Battery-Utility"
-      - platform: time
-        at: "06:00:00"
+        entity_id: input_boolean.blackout_saving_mode
+      # ВИПРАВЛЕННЯ: раніше не було тригера за часом, тож перехід
+      # день↔ніч (06:00/21:00) міг не перерахуватись вчасно, якщо саме
+      # тоді жоден із сенсорів вище не змінювався (звідси й скарга на
+      # "не перемикався струм у нічному режимі" — нічний фіксований
+      # струм застосовувався лише тоді, коли випадково спрацьовував
+      # інший тригер, а не гарантовано о 21:00/06:00).
       - platform: time
         at: "21:00:00"
+      - platform: time
+        at: "06:00:00"
     condition:
+      # ГОЛОВНИЙ ВИМИКАЧ ПАКЕТА.
+      - condition: state
+        entity_id: input_boolean.package_automations_enabled
+        state: "on"
+      # ВИПРАВЛЕННЯ (Суттєве зауваження №2): раніше ця автоматизація не
+      # перевіряла готовність системи після рестарту HA — могла виставити
+      # струм заряду на основі застарілого/нульового SOC одразу після
+      # перезапуску, поки BMS ще не перепідключився.
+      - condition: state
+        entity_id: binary_sensor.system_ready_for_automation
+        state: "on"
+      # Захист від спаму: не виконувати частіше ніж раз на 5 хвилин.
+      # ВИПРАВЛЕННЯ: раніше тут був жорстко прописаний
+      # entity_id: automation.solar_max_charge_current_control — але HA
+      # генерує entity_id автоматизації з alias (а не з id), тож реальна
+      # сутність мала іншу (українську) назву, і посилання ніколи не
+      # резолвилось (Spook виявляв "невідому сутність"). Тепер
+      # використовується вбудована змінна `this`, яка завжди коректно
+      # вказує на поточну автоматизацію незалежно від фактичного entity_id.
+      - condition: template
+        value_template: >
+          {{ (now() - (this.attributes.last_triggered | default(as_datetime('1970-01-01'), true))).total_seconds() > 300 }}
+      # НОВА ФУНКЦІЯ (Блекаут/Економія АКБ): у звичайному режимі струм СЕС
+      # регулюється лише коли вихід у режимі "сонце" (інакше нема сенсу —
+      # значення й так не мало б впливати на заряд, якщо ми не в цьому
+      # режимі виходу). Але charge_source_priority (заряд від СЕС) — ОКРЕМА
+      # від output_source_priority (звідки живиться будинок) настройка:
+      # сонце заряджає АКБ незалежно від того, звідки живиться будинок. У
+      # режимі Блекаут/Економія це якраз і потрібно — заряджати від сонця
+      # МАКСИМАЛЬНО, навіть коли вихід залишається на мережі (заощаджуючи
+      # АКБ від використання на побутові потреби). Тому тут або звичайна
+      # умова (вихід=сонце), або просто активний blackout_saving_mode.
       - condition: or
         conditions:
           - condition: state
@@ -467,44 +1829,100 @@ automation:
           - condition: state
             entity_id: sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority
             state: "PV-Battery-Utility"
+          - condition: state
+            entity_id: input_boolean.blackout_saving_mode
+            state: "on"
+          - condition: state
+            entity_id: input_boolean.max_battery_mode
+            state: "on"
     action:
       - variables:
-          target_current: >
-            {% set rem_forecast = states('sensor.volcast_solar_forecast_solar_forecast_remaining_today') | float(0) %}
-            {% set soc = states('sensor.bms_battery_state_of_charge') | float(states('sensor.bms_battery_soc_calculated') | float(0)) %}
-            {% set h = now().hour %}
-            {% if h >= 6 and h < 21 %}
-              {% if rem_forecast > 5.0 %}
-                {% if soc <= 70 %} 40
-                {% elif soc <= 80 %} 30
-                {% elif soc <= 85 %} 20
-                {% else %} 10
+          # Використовуємо лише одне джерело SOC для стабільності
+          soc: "{{ states('sensor.bms_battery_state_of_charge') | float(0) }}"
+          curr: "{{ states('number.anenji_anj_11kw_48v_wifi_p_max_charge_current') | int(30) }}"
+          # ВИПРАВЛЕННЯ (виявлено при детальному аналізі): цей прогноз раніше
+          # НЕ враховував input_number.solar_forecast_calibration_factor,
+          # хоча sensor.tomorrow_energy_deficit і sensor.today_solar_shortfall_kwh
+          # вже його враховують — неузгодженість: калібрування впливало на
+          # рішення про перемикання день/ніч, але не на рішення про струм
+          # заряду СЕС. Тепер один і той самий коефіцієнт застосовується
+          # всюди, де фігурує прогноз генерації.
+          rem_forecast: "{{ states('sensor.volcast_solar_forecast_solar_forecast_remaining_today') | float(0) * (states('input_number.solar_forecast_calibration_factor') | float(1.0)) }}"
+          full_cap: "{{ states('sensor.bms_battery_full_capacity_kwh') | float(5.0) }}"
+          rem_cap: "{{ states('sensor.bms_battery_remaining_kwh') | float(5.0) }}"
+          missing_kwh: "{{ [full_cap - rem_cap, 0] | max }}"
+          h: "{{ now().hour }}"
+          enough_solar: "{{ rem_forecast >= (missing_kwh + 1.5) }}"
+          
+          # ВИПРАВЛЕННЯ (п.4 запиту користувача): перевірено і виправлено —
+          # раніше третій поріг (soc_high=95%) створював "буферну" зону
+          # 85-95% зі струмом 'середній', і лише понад 95% струм падав до
+          # 'низького'. Це НЕ відповідало специфікації користувача:
+          #   0-70% SOC  → 40А (i_high)
+          #   71-85% SOC → 20А (i_mid)  [раніше було 30А — виправлено]
+          #   86-100% SOC → 10А (i_low)
+          # Тепер використовуються рівно 2 межі (soc_low=70, soc_mid=85);
+          # input_number.solar_charge_soc_high прибрано з пакета повністю
+          # (за вашим підтвердженням) — дашборд оновлено без цього слайдера.
+          # Невеликий "буфер" гістерезису (±3%) навколо кожної межі лишено,
+          # щоб струм не смикався туди-сюди при коливаннях SOC на межі —
+          # сама структура меж (де саме відбувається перехід) відповідає
+          # специфікації точно.
+          soc_low: "{{ states('input_number.solar_charge_soc_low') | float(70) }}"
+          soc_mid: "{{ states('input_number.solar_charge_soc_mid') | float(85) }}"
+          i_high: "{{ states('input_number.solar_charge_current_high') | int(40) }}"
+          i_mid: "{{ states('input_number.solar_charge_current_mid') | int(20) }}"
+          i_low: "{{ states('input_number.solar_charge_current_low') | int(10) }}"
+          i_night: "{{ states('input_number.solar_charge_current_night') | int(30) }}"
+          is_blackout_mode: "{{ is_state('input_boolean.blackout_saving_mode', 'on') }}"
+          is_max_battery_mode: "{{ is_state('input_boolean.max_battery_mode', 'on') }}"
+          # ⚠️ ПРИМІТКА: вікно 06:00-21:00 тут — це РОЗКЛАД СЕС (коли є сенс
+          # адаптивно рахувати струм заряду від сонця), а НЕ те саме, що
+          # binary_sensor.night_tariff_window (23:00-07:00, тарифне вікно
+          # для заряду від МЕРЕЖІ у іншій автоматизації). Різні межі
+          # навмисні — див. коментар біля Night Tariff Window вище.
+          #
+          # НОВА ФУНКЦІЯ (Блекаут/Економія АКБ та Максимум АКБ): окрема, значно простіша
+          # гілка — максимальний струм (i_high) будь-коли є сенс заряджати
+          # (є прогноз/залишок генерації), незалежно від дня/ночі-вікна СЕС
+          # і без звичайних щаблів 70%/85%. Єдиний виняток — тейперинг до
+          # i_low дуже близько до повного заряду (>95%), щоб не "заливати"
+          # майже повну батарею високим струмом (безпека АКБ). Це і є
+          # "пріоритет на заряджання АКБ" з вашого запиту.
+          target_current: >-
+            {% if is_blackout_mode or is_max_battery_mode %}
+              {% if soc >= 95 %}
+                {{ i_low }}
+              {% else %}
+                {{ i_high }}
+              {% endif %}
+            {% elif h >= 6 and h < 21 %}
+              {% if enough_solar %}
+                {% if soc <= soc_low %}
+                  {{ i_high }}
+                {% elif soc <= soc_mid %}
+                  {{ i_high if (curr == i_high and soc <= (soc_low + 3)) else i_mid }}
+                {% else %}
+                  {{ i_mid if (curr == i_mid and soc <= (soc_mid + 3)) else i_low }}
                 {% endif %}
               {% else %}
-                {% if soc <= 50 %} 50
-                {% elif soc <= 70 %} 40
-                {% elif soc <= 80 %} 30
-                {% elif soc <= 85 %} 20
-                {% else %} 10
+                {% if soc <= soc_mid %}
+                  {{ i_high }}
+                {% else %}
+                  {{ i_high if (curr == i_high and soc <= (soc_mid + 3)) else i_low }}
                 {% endif %}
               {% endif %}
             {% else %}
-              30
+              {{ i_night }}
             {% endif %}
 
-      - if:
-          - condition: template
-            value_template: >
-              {{ states('number.anenji_anj_11kw_48v_wifi_p_max_charge_current') | int(0) != target_current | int(0) }}
-        then:
-          - action: script.set_solar_charge_current
-            data:
-              target_current: "{{ target_current }}"
+      - action: script.set_solar_charge_current
+        data:
+          target_current: "{{ target_current }}"
 
-  # Автоматичний контроль старту/зупинки заряду від мережі
   - id: solar_battery_grid_charge_logic
-    alias: "Автоматизація: Керування зарядом АКБ від мережі"
-    description: "Аналіз дефіциту з 15:00, двотарифна логіка, сезонні правила та контроль динамічного цільового резерву"
+    alias: "Автоматизація: Керування зарядом АКБ від мережі (З Гістерезисом)"
+    description: "Аналіз дефіциту. Використовується затримка for 5 min для уникнення смикань."
     mode: single
     trigger:
       - platform: time
@@ -523,15 +1941,39 @@ automation:
         value_template: >
           {{ states('sensor.bms_battery_remaining_kwh') | float(0) >= states('sensor.calculated_target_reserve_kwh') | float(0) }}
         id: target_reached
-      - platform: numeric_state
-        entity_id: sensor.bms_battery_soc_calculated
-        below: 15
-        id: critical_low
+        for: "00:05:00" # Захист від коливань біля межі
+
+    condition:
+      # ГОЛОВНИЙ ВИМИКАЧ ПАКЕТА. Примітка: зупинка вже активного заряду (stop_grid_charge)
+      # НЕ гейтиться цим прапорцем всередині choose — але якщо automation взагалі
+      # не виконається (умова тут не пройде), заряд, розпочатий раніше, продовжить
+      # йти, доки хтось не зупинить його вручну через select. Тому: вимикання
+      # пакета не "заморожує" активний заряд назавжди — просто ця автоматизація
+      # перестає ним керувати, поки прапорець знову не увімкнено.
+      - condition: state
+        entity_id: input_boolean.package_automations_enabled
+        state: "on"
+      # ВИПРАВЛЕННЯ (Суттєве зауваження №2): раніше ця автоматизація не
+      # перевіряла готовність системи після рестарту HA — той самий ризик
+      # (старт/зупинка заряду на основі застарілого SOC), що й для
+      # solar_max_charge_current_control. Той самий нюанс: якщо дані
+      # "не готові" рівно в момент, коли мав би спрацювати stop (07:00 чи
+      # досягнення резерву), зупинка теж відкладеться — але це рідкісне вікно
+      # (~секунди-хвилини після рестарту), і безпечніше почекати на свіжі
+      # дані, ніж діяти наосліп.
+      - condition: state
+        entity_id: binary_sensor.system_ready_for_automation
+        state: "on"
 
     action:
       - choose:
-          # Умови для зупинки зарядки від мережі
           - conditions:
+              # ВИПРАВЛЕННЯ: зупиняємо заряд і надсилаємо сповіщення ТІЛЬКИ якщо
+              # заряд від мережі РЕАЛЬНО активний (пріоритет інвертора НЕ 'PV Only').
+              # Якщо інвертор уже в 'PV Only', нема що зупиняти і нема про що спамити.
+              - condition: template
+                value_template: >-
+                  {{ not is_state('select.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Only') and not is_state('sensor.anenji_anj_11kw_48v_wifi_p_charge_source_priority', 'PV Only') }}
               - condition: or
                 conditions:
                   - condition: state
@@ -539,93 +1981,864 @@ automation:
                     state: "off"
                   - condition: trigger
                     id: target_reached
-                  - condition: template
-                    value_template: >
-                      {{ trigger.id == 'night_end' and is_state('binary_sensor.heating_season', 'off') }}
+                  - condition: trigger
+                    id: night_end # Безумовна зупинка о 7:00, ігноруючи сезон, щоб дати працювати сонцю
             sequence:
               - action: script.stop_grid_charge
+              # ДОДАНО: пояснення ПРИЧИНИ зупинки
+              - variables:
+                  stop_reason: >-
+                    {% if trigger is defined and trigger.id == 'target_reached' %}
+                      досягнуто цільового резерву ({{ states('sensor.calculated_target_reserve_kwh') | round(1) }} кВт·год)
+                    {% elif trigger is defined and trigger.id == 'night_end' %}
+                      настав кінець нічного вікна (07:00) — заряд зупиняється безумовно, щоб дати попрацювати сонцю
+                    {% elif is_state('input_boolean.allow_grid_charge', 'off') %}
+                      перемикач "Дозвіл заряджання від мережі" вимкнено
+                    {% else %}
+                      досягнуто цільового резерву ({{ states('sensor.calculated_target_reserve_kwh') | round(1) }} кВт·год)
+                    {% endif %}
+              - action: persistent_notification.create
+                data:
+                  title: "🔌 Заряд від мережі: зупинено"
+                  message: "Причина: {{ stop_reason | trim }}."
 
-          # Умови для запуску зарядки від мережі
           - conditions:
               - condition: state
                 entity_id: input_boolean.allow_grid_charge
                 state: "on"
+              # Гістерезис старту: починаємо заряд тільки якщо впали на 0.5 кВт нижче цілі
               - condition: template
                 value_template: >
-                  {{ states('sensor.volcast_solar_forecast_energy_forecast_tomorrow') | float(0) <= 10.0 }}
+                  {{ states('sensor.bms_battery_remaining_kwh') | float(0) < (states('sensor.calculated_target_reserve_kwh') | float(0) - 0.5) }}
               - condition: template
                 value_template: >
-                  {{ states('sensor.bms_battery_remaining_kwh') | float(0) < states('sensor.calculated_target_reserve_kwh') | float(0) }}
-              - condition: template
-                value_template: >
+                  {# ВИПРАВЛЕННЯ 3.3: раніше нічний заряд (is_night) вмикався
+                     щоночі "наосліп", незалежно від того, чи вистачить сонця
+                     завтра. Тепер він додатково перевіряє
+                     binary_sensor.tomorrow_deficit_active (сенсор, спільний
+                     з вечірньою автоматизацією перемикання на мережу). #}
                   {% set is_heating = is_state('binary_sensor.heating_season', 'on') %}
                   {% set is_night = is_state('binary_sensor.night_tariff_window', 'on') %}
                   {% set deficit_active = is_state('binary_sensor.battery_deficit_active', 'on') %}
-                  {% set is_critical = states('sensor.bms_battery_soc_calculated') | float(100) < 15 %}
-                  {{ (is_heating and deficit_active) or is_night or is_critical }}
+                  {% set tomorrow_deficit_active = is_state('binary_sensor.tomorrow_deficit_active', 'on') %}
+                  {% set is_critical = states('sensor.bms_battery_state_of_charge') | float(100) < 15 %}
+                  {# НОВА ФУНКЦІЯ (Блекаут/Економія АКБ): у цьому режимі заряд
+                     від мережі має пріоритет — дозволяємо старт БУДЬ-ЯКОЇ
+                     пори доби й незалежно від сезону, якщо є суттєвий поточний
+                     дефіцит проти (значно вищого) цільового резерву. #}
+                  {% set is_blackout_mode = is_state('input_boolean.blackout_saving_mode', 'on') %}
+                  {{ (is_blackout_mode and deficit_active) or (is_heating and deficit_active) or (is_night and tomorrow_deficit_active) or is_critical }}
             sequence:
               - action: script.start_grid_charge
+              # ДОДАНО: пояснення ПРИЧИНИ старту — котра саме з умов
+              # спрацювала, у тому ж порядку пріоритету, що й сама умова.
+              - variables:
+                  start_reason: >-
+                    {% if states('sensor.bms_battery_state_of_charge') | float(100) < 15 %}
+                      критичний рівень заряду АКБ ({{ states('sensor.bms_battery_state_of_charge') }}%, менше 15%)
+                    {% elif is_state('input_boolean.blackout_saving_mode', 'on') and is_state('binary_sensor.battery_deficit_active', 'on') %}
+                      активний режим "Блекаут/Економія АКБ" і поточний дефіцит енергії проти підвищеного резерву ({{ states('sensor.battery_energy_deficit') }} кВт·год)
+                    {% elif is_state('binary_sensor.heating_season', 'on') and is_state('binary_sensor.battery_deficit_active', 'on') %}
+                      опалювальний сезон і активний поточний дефіцит енергії ({{ states('sensor.battery_energy_deficit') }} кВт·год)
+                    {% elif is_state('binary_sensor.night_tariff_window', 'on') and is_state('binary_sensor.tomorrow_deficit_active', 'on') %}
+                      нічний тариф і очікується дефіцит генерації завтра ({{ states('sensor.tomorrow_energy_deficit') }} кВт·год)
+                    {% else %}
+                      виконано умови гістерезису старту
+                    {% endif %}
+              - action: persistent_notification.create
+                data:
+                  title: "🔌 Заряд від мережі: розпочато"
+                  message: >
+                    Причина: {{ start_reason | trim }}. Заряд АКБ:
+                    {{ states('sensor.bms_battery_remaining_kwh') | round(1) }} кВт·год
+                    (ціль: {{ states('sensor.calculated_target_reserve_kwh') | round(1) }} кВт·год).
 
-  # Захисний байпас навантаження будинку за рівнем SOC АКБ (15% / 25%)
   - id: solar_battery_soc_bypass_logic
-    alias: "Автоматизація: Байпас мережі за рівнем SOC (15% / 25%)"
-    description: "Перевірка щохвилини та при зміні стану: при SOC < 15% умикає мережу (PV-Utility-Battery), при SOC >= 25% повертає на сонце (PV-Battery-Utility)"
+    alias: "Автоматизація: Аварійний байпас мережі за рівнем SOC (15%)"
+    description: "Працює як жорсткий резерв. Повернення на 25% тільки якщо вимкнено Розумний День/Ніч."
     mode: single
     trigger:
-      - platform: time_pattern
-        minutes: "/5"
-      - platform: numeric_state
-        entity_id: sensor.bms_battery_soc_calculated
-        below: 15
       - platform: numeric_state
         entity_id: sensor.bms_battery_state_of_charge
         below: 15
-      - platform: numeric_state
-        entity_id: sensor.bms_battery_soc_calculated
-        above: 24.9
+        for: "00:02:00"
       - platform: numeric_state
         entity_id: sensor.bms_battery_state_of_charge
         above: 24.9
+        for: "00:05:00"
 
-    # 🛑 ЗАХИСТ ВІД ХИБНОГО СТАРТУ ПІСЛЯ РЕБУТУ (3 хвилини затримки)
     condition:
-      - condition: template
-        value_template: >
-          {% set up = states('sensor.online') %}
-          {% if up in ['unknown', 'unavailable', 'none', ''] %}
-            false
-          {% else %}
-            {{ (now() - up | as_datetime).total_seconds() > 180 }}
-          {% endif %}
+      # ГОЛОВНИЙ ВИМИКАЧ ПАКЕТА. ⚠️ Вимкнення package_automations_enabled
+      # вимикає і цей АВАРІЙНИЙ захист від глибокого розряду АКБ — свідомий
+      # вибір користувача (light-switch для ВСього пакета), але майте на увазі.
+      - condition: state
+        entity_id: input_boolean.package_automations_enabled
+        state: "on"
+      # ВИПРАВЛЕННЯ 3.4: замінено неоднозначний inline-шаблон на явний
+      # binary_sensor.system_ready_for_automation (див. визначення вище).
+      - condition: state
+        entity_id: binary_sensor.system_ready_for_automation
+        state: "on"
 
     action:
       - choose:
-          # Перемикання на мережу при низькому заряді (SOC < 15%)
           - conditions:
               - condition: template
-                value_template: >
-                  {% set soc = states('sensor.bms_battery_state_of_charge') | float(states('sensor.bms_battery_soc_calculated') | float(100)) %}
-                  {{ soc < 15 }}
-              - condition: or
-                conditions:
-                  - condition: template
-                    value_template: >
-                      {{ not is_state('select.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') and not is_state('sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') }}
-                  - condition: state
-                    entity_id: switch.invertor_220_in
-                    state: "off"
+                value_template: "{{ states('sensor.bms_battery_state_of_charge') | float(100) < 15 }}"
             sequence:
+              # Примітка (3.2): перевірка наявності мережі перед перемиканням
+              # тепер виконується всередині самого скрипта switch_to_grid_bypass.
               - action: script.switch_to_grid_bypass
+                data:
+                  reason: >-
+                    🚨 [Аварійний захист] SOC < 15%
+                    ({{ states('sensor.bms_battery_state_of_charge') }}%)
+              # ДОДАНО: пояснення ПРИЧИНИ рішення — раніше цей найкритичніший
+              # захист не пояснював, чому саме спрацював (лише узагальнене
+              # сповіщення від самого скрипта про факт переключення).
+              - action: persistent_notification.create
+                data:
+                  title: "🚨 [Аварійний захист] Критичний заряд АКБ < 15%"
+                  message: >
+                    SOC АКБ впав нижче 15% ({{ states('sensor.bms_battery_state_of_charge') }}%).
+                    Ініційовано аварійне переключення живлення будинку на
+                    мережу для захисту батареї від глибокого розряду.
 
-          # Повернення на сонце/АКБ після достатнього відновлення заряду (SOC >= 25%)
           - conditions:
+              # Блокуємо повернення, якщо працює Розумний День/Ніч (там своя логіка)
+              - condition: state
+                entity_id: input_boolean.auto_day_night
+                state: "off"
               - condition: template
-                value_template: >
-                  {% set soc = states('sensor.bms_battery_state_of_charge') | float(states('sensor.bms_battery_soc_calculated') | float(0)) %}
-                  {{ soc >= 25 }}
-              - condition: template
-                value_template: >
-                  {% set is_output_grid = is_state('select.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') or is_state('sensor.anenji_anj_11kw_48v_wifi_p_output_source_priority', 'PV-Utility-Battery') %}
-                  {{ is_output_grid }}
+                value_template: "{{ states('sensor.bms_battery_state_of_charge') | float(0) >= 25 }}"
             sequence:
               - action: script.switch_to_solar_bypass
+                data:
+                  reason: >-
+                    🔋 [Аварійний захист] Заряд відновлено
+                    ({{ states('sensor.bms_battery_state_of_charge') }}%, поріг 25%)
+              - action: persistent_notification.create
+                data:
+                  title: "🔋 [Аварійний захист] Заряд відновлено (>= 25%)"
+                  message: >
+                    SOC АКБ відновився до {{ states('sensor.bms_battery_state_of_charge') }}%
+                    (поріг повернення 25%). Живлення будинку переведено назад
+                    на сонячні панелі/АКБ.
+
+  # ==============================================================================
+  # НОВІ АВТОМАТИЗАЦІЇ: РОЗУМНИЙ ДЕНЬ / НІЧ
+  # ==============================================================================
+  - id: solar_auto_evening_grid
+    alias: "Solar: Вечірній аналіз та перемикання на мережу (23:00)"
+    mode: single
+    trigger:
+      # Раніше було 22:58, щоб уникнути гонитви з нічним зарядом (23:00) через
+      # спільне реле. Після ВИПРАВЛЕННЯ 3.1 (input_boolean.output_on_grid не
+      # залежить від switch.invertor_220_in) ці дві підсистеми повністю
+      # незалежні, тож тепер безпечно тригерити рівно о 23:00, як і просив користувач.
+      - platform: time
+        at: "23:00:00"
+    condition:
+      # ГОЛОВНИЙ ВИМИКАЧ ПАКЕТА.
+      - condition: state
+        entity_id: input_boolean.package_automations_enabled
+        state: "on"
+      # НАЯВНІСТЬ МІСЬКОЇ МЕРЕЖІ: керування байпасом активне лише коли мережа є
+      - condition: state
+        entity_id: binary_sensor.oblenergo_grid
+        state: "on"
+      # ГОЛОВНИЙ ВИМИКАЧ ЛОГІКИ ДЕНЬ/НІЧ: уся ця логіка активна лише при увімкненому Авто День/Ніч.
+      - condition: state
+        entity_id: input_boolean.auto_day_night
+        state: "on"
+      # ВИПРАВЛЕННЯ 3.1: switch.invertor_220_in замінено на input_boolean.output_on_grid,
+      # бо саме реле також вмикається скриптом start_grid_charge для заряду АКБ і
+      # більше не є надійним індикатором поточного режиму виходу.
+      - condition: state
+        entity_id: input_boolean.output_on_grid
+        state: "off"
+      # ВИПРАВЛЕННЯ (Суттєве зауваження №2): раніше найважливіша день/ніч
+      # автоматизація (перемикання виходу на мережу) не перевіряла готовність
+      # системи після рестарту HA.
+      - condition: state
+        entity_id: binary_sensor.system_ready_for_automation
+        state: "on"
+      # ВИПРАВЛЕННЯ (Jev AI): якщо увімкнено AI-керування, вечірнє рішення приймає модель Jev.
+      # Ця стандартна автоматизація виконується як фолбек тільки коли AI вимкнено.
+      - condition: state
+        entity_id: input_boolean.use_jev_ai
+        state: "off"
+    action:
+      # ВИПРАВЛЕННЯ 3.3/3.7: розрахунок дефіциту на завтра винесено в
+      # sensor.tomorrow_energy_deficit (спільний з нічним зарядом від мережі,
+      # з безпечним фолбеком замість float(0) при відсутності прогнозу; вже
+      # враховує поточний заряд АКБ через available_batt_kwh і запас 1.2 на
+      # похибку прогнозу споживання).
+      - variables:
+          energy_deficit: "{{ states('sensor.tomorrow_energy_deficit') | float(0) }}"
+          significant_threshold: "{{ states('input_number.evening_switch_deficit_threshold_kwh') | float(1.5) }}"
+      - if:
+          # "Значно менша генерація за споживання" = дефіцит перевищує
+          # налаштовуваний поріг (input_number.evening_switch_deficit_threshold_kwh),
+          # а не просто > 0 — це і є критерій "значно", а не "хоч трохи".
+          - condition: template
+            value_template: "{{ energy_deficit >= significant_threshold }}"
+        then:
+          # Перевірку DIN-реле (і автоматичне його увімкнення за потреби)
+          # виконує сам script.switch_to_grid_bypass — дублювати тут не
+          # потрібно.
+          - action: script.switch_to_grid_bypass
+            data:
+              reason: >-
+                ⚙️ [Локальна автоматика] Вечірній перехід: дефіцит на завтра
+                {{ energy_deficit }} кВт·год (поріг {{ significant_threshold }})
+          - action: persistent_notification.create
+            data:
+              title: "🌙 [Локальна автоматика] Вечірнє переключення на МЕРЕЖУ"
+              message: >
+                Прогноз генерації на завтра значно менший за очікуване
+                споживання (дефіцит {{ energy_deficit }} кВт·год, поріг
+                {{ significant_threshold }} кВт·год з урахуванням поточного
+                заряду АКБ). Ініційовано перемикання живлення будинку на мережу.
+
+  - id: solar_auto_morning_solar
+    alias: "Solar: Ранкове перемикання на сонце (07:00, з гістерезисом)"
+    mode: single
+    trigger:
+      - platform: time
+        at: "07:00:00"
+      # Ловимо і випадок, коли о 7:00 АКБ ще <30% — щойно зарядиться, спрацює тут.
+      - platform: state
+        entity_id: sensor.bms_battery_state_of_charge
+      # Довимога: перерахунок і при оновленні прогнозу генерації протягом дня —
+      # якщо АКБ вже >=30%, але рішення "не варто перемикатись" було прийнято
+      # рано-вранці через слабкий прогноз, який потім покращився (хмари
+      # розійшлись), автоматизація має шанс переоцінити рішення без очікування
+      # завтрашнього ранку.
+      - platform: state
+        entity_id: sensor.today_solar_shortfall_kwh
+      # ВИПРАВЛЕННЯ (за скаргою користувача): раніше перемикання режимних
+      # тумблерів («Максимум Сонця/АКБ», «Блекаут/Економія») саме по собі
+      # НЕ переоцінювало рішення — доводилось чекати наступної зміни SOC
+      # чи прогнозу, або перемикати вручну. Тепер зміна БУДЬ-ЯКОГО з двох
+      # перемикачів одразу викликає переоцінку (умова нижче й так визначить,
+      # чи потрібна реальна дія — цей тригер лише гарантує негайну спробу).
+      - platform: state
+        entity_id: input_boolean.max_solar_battery_mode
+      - platform: state
+        entity_id: input_boolean.blackout_saving_mode
+      # ВИПРАВЛЕННЯ (за запитанням користувача): якщо саме о 07:00:00
+      # система ще не готова (binary_sensor.system_ready_for_automation =
+      # off — щойно був рестарт HA чи BMS ще не перепідключився), спроба
+      # переходу на сонце просто "губиться" — condition: блокує дію
+      # цілком, а не відкладає її. Єдина "страховка" раніше — наступна
+      # зміна SOC чи прогнозу, яка теоретично може затриматись. Тепер
+      # додано прямий повтор кожні 5 хвилин — гарантує ще один шанс, навіть
+      # якщо жоден інший сенсор поки не змінюється. Дешево: поза вікном
+      # 06:59-17:00 чи коли вже output_on_grid=off, condition: й так одразу
+      # блокує дію, жодного зайвого ефекту.
+      - platform: time_pattern
+        minutes: "/5"
+    condition:
+      # ГОЛОВНИЙ ВИМИКАЧ ПАКЕТА.
+      - condition: state
+        entity_id: input_boolean.package_automations_enabled
+        state: "on"
+      # НАЯВНІСТЬ МІСЬКОЇ МЕРЕЖІ: перемикання виходу активне лише коли мережа є
+      - condition: state
+        entity_id: binary_sensor.oblenergo_grid
+        state: "on"
+      # ГОЛОВНИЙ ВИМИКАЧ ЛОГІКИ ДЕНЬ/НІЧ: уся ця логіка активна лише при увімкненому Авто День/Ніч.
+      - condition: state
+        entity_id: input_boolean.auto_day_night
+        state: "on"
+      # Перемикаємось лише якщо зараз дійсно в режимі "мережа спочатку".
+      - condition: state
+        entity_id: input_boolean.output_on_grid
+        state: "on"
+      - condition: time
+        after: "06:59:00"
+        before: "17:00:00"
+      - condition: state
+        entity_id: binary_sensor.system_ready_for_automation
+        state: "on"
+      # ВИПРАВЛЕННЯ (Jev AI): якщо увімкнено AI-керування, ранкове рішення приймає модель Jev.
+      # Ця стандартна автоматизація виконується як фолбек тільки коли AI вимкнено.
+      - condition: state
+        entity_id: input_boolean.use_jev_ai
+        state: "off"
+    action:
+      - variables:
+          soc_pct: "{{ states('sensor.bms_battery_state_of_charge') | float(0) }}"
+          soc_kwh: "{{ states('sensor.bms_battery_remaining_kwh') | float(0) }}"
+          reserve_kwh: "{{ states('sensor.calculated_target_reserve_kwh') | float(0) }}"
+          solar_shortfall: "{{ states('sensor.today_solar_shortfall_kwh') | float(0) }}"
+          batt_slack: "{{ [soc_kwh - reserve_kwh, 0] | max }}"
+          is_blackout_mode: "{{ is_state('input_boolean.blackout_saving_mode', 'on') }}"
+          # ВИПРАВЛЕННЯ (виявлено з реальних логів — цикл переключень
+          # Сонце↔Мережа щохвилини): "OR"-умови нижче (≥32% і "сонця
+          # вистачає") раніше могли спрацювати навіть коли SOC% ще НИЖЧИЙ за
+          # reserve_soc% (поріг, за яким solar_auto_daytime_fallback одразу
+          # повертає на мережу) — якщо цільовий резерв виявлявся вищим за
+          # 32% (наприклад, 37.5%, як і сталось у вашому випадку: резерв
+          # 3.6 кВт·год при ємності 9.59 кВт·год). Це створювало "мертву
+          # зону", де морнінг-перемикання каже "давай на сонце", а
+          # daytime_fallback одразу каже "ні, повертай на мережу" — і так
+          # щохвилини. Тепер ОБИДВІ "OR"-умови додатково вимагають SOC% з
+          # запасом (+2%) над reserve_soc% — тим самим порогом, який
+          # використовує daytime_fallback (round(0) від reserve_kwh/full_cap),
+          # тож дві автоматизації більше не можуть суперечити одна одній.
+          full_capacity_kwh: "{{ states('sensor.bms_battery_full_capacity_kwh') | float(10.0) }}"
+          reserve_soc_pct: "{{ (reserve_kwh / full_capacity_kwh * 100) if full_capacity_kwh > 0 else 0 }}"
+          is_aggressive_mode: "{{ is_state('binary_sensor.aggressive_solar_mode', 'on') }}"
+          # НОВА ФУНКЦІЯ (за уточненням користувача): поза опалювальним
+          # сезоном (і без режиму Блекаут/Економія) день дорожчий за ніч
+          # удвічі — перемикаємось на сонце практично одразу з 7:00,
+          # НЕЗАЛЕЖНО від резерву й прогнозу (заряд АКБ може опуститись
+          # нижче резерву — компенсує дешевий нічний заряд за потреби).
+          # ВИПРАВЛЕННЯ (за уточненням користувача): агресивний режим тепер
+          # узгоджений з solar_auto_daytime_fallback, яка теж активна тут,
+          # але звіряється з input_number.min_target_reserve_kwh (а не
+          # ігнорує резерв повністю, як було раніше). Тому й тут — той
+          # самий поріг (min_target_reserve_kwh), тим самим методом захисту
+          # від "гойдалки", що і в звичайному режимі (+2% запасу над
+          # порогом daytime_fallback), АЛЕ з нижньою межею 25% про всяк
+          # випадок — якщо користувач виставить min_target_reserve_kwh дуже
+          # низько (наприклад, 1.0 кВт·год ≈ 10% для 10-кВт·годинної АКБ,
+          # нижче за аварійний поріг 15%), це запобігає "гойдалці" з
+          # аварійним байпасом (форсує мережу <15% → відновлення до ~12% →
+          # ця автоматизація одразу назад на сонце → знову злив → повтор).
+          min_reserve_kwh: "{{ states('input_number.min_target_reserve_kwh') | float(2.0) }}"
+          min_reserve_soc_pct: "{{ (min_reserve_kwh / full_capacity_kwh * 100) if full_capacity_kwh > 0 else 0 }}"
+          charge_ready: >-
+            {% set safe_floor_pct = [32, reserve_soc_pct + 2] | max %}
+            {% set aggressive_floor_pct = [25, min_reserve_soc_pct + 2] | max %}
+            {% if is_aggressive_mode %}
+              {{ (soc_kwh >= min_reserve_kwh + 0.2) or (soc_pct >= aggressive_floor_pct) }}
+            {% elif is_blackout_mode %}
+              {{ (soc_kwh >= reserve_kwh + 0.2) or ((states('sensor.today_solar_shortfall_kwh') | float(0) <= 0) and (soc_pct >= safe_floor_pct)) }}
+            {% else %}
+              {{ (soc_kwh >= reserve_kwh + 0.2) or (soc_pct >= safe_floor_pct) }}
+            {% endif %}
+          # Чи варто взагалі перемикатись сьогодні: сонця має вистачати на
+          # споживання (з консервативним хаіркатом на прогноз), АБО в АКБ і так
+          # є достатній запас понад резерв (>1 кВт·год), щоб перемикання було
+          # безпечним навіть якщо прогноз генерації не справдиться.
+          # У режимі "максимум сонця" (aggressive) прогноз ІГНОРУЄТЬСЯ повністю —
+          # день однаково вдвічі дорожчий за ніч, тож сенсу чекати "вигідного"
+          # прогнозу немає.
+          solar_worth_it: >-
+            {% if is_aggressive_mode %}
+              true
+            {% else %}
+              {{ solar_shortfall <= 0.3 or batt_slack >= 1.0 }}
+            {% endif %}
+      - if:
+          - condition: state
+            entity_id: input_boolean.max_battery_mode
+            state: "on"
+        then:
+          - stop: "Увімкнено режим Максимум АКБ — перемиканням керує solar_max_battery_controller."
+      - if:
+          # Якщо заряд ще не готовий (< 30% і < резерву) — просто чекаємо,
+          # наступний виклик прийде самостійно при зміні sensor SOC.
+          - condition: template
+            value_template: "{{ not charge_ready }}"
+        then:
+          - stop: "АКБ ще не заряджена до 30% / резерву. Чекаємо."
+      - if:
+          - condition: template
+            value_template: "{{ not solar_worth_it }}"
+        then:
+          # Свідомо НЕ перемикаємось: прогноз генерації на сьогодні дуже
+          # слабкий, а буфер АКБ понад резерв замалий — перехід на сонце
+          # призвів би до негайного відкату назад через solar_auto_daytime_fallback.
+          # Лишаємось на мережі увесь день, спробуємо знову завтра о 7:00.
+          - stop: "Прогноз генерації на сьогодні замалий — лишаємось на мережі."
+      - action: script.switch_to_solar_bypass
+        data:
+          reason: >-
+            ⚙️ [Локальна автоматика] {% if is_blackout_mode %}🚨 Блекаут: сонця вистачає{% elif is_aggressive_mode %}☀️ Максимум сонця (не опалювальний сезон){% else %}☀️ Ранковий перехід: АКБ {{ soc_pct }}%{% endif %}
+      - action: persistent_notification.create
+        data:
+          title: "☀️ [Локальна автоматика] Перехід на Сонце"
+          message: >
+            {% if is_blackout_mode %}[Режим Блекаут/Економія] {% elif is_aggressive_mode %}[Максимум сонця — не опалювальний сезон] {% endif %}АКБ:
+            {{ soc_pct }}% ({{ soc_kwh | round(1) }} кВт·год, резерв
+            {{ reserve_kwh | round(1) }} кВт·год). Дефіцит сонячної генерації
+            на сьогодні: {{ solar_shortfall }} кВт·год (запас в АКБ понад
+            резерв: {{ batt_slack | round(1) }} кВт·год). Живлення переведено
+            на сонячні панелі.
+
+  - id: solar_auto_daytime_fallback
+    alias: "Solar: Динамічне повернення на мережу при вичерпанні енергії"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.bms_battery_state_of_charge
+      # ВИПРАВЛЕННЯ (за скаргою користувача): той самий принцип, що й у
+      # solar_auto_morning_solar — зміна режимного перемикача сама по собі
+      # тепер одразу викликає переоцінку (наприклад, вимкнення «Максимум
+      # Сонця/АКБ» одразу перевіряє, чи не пора повернутись на мережу за
+      # звичайним, суворішим порогом).
+      - platform: state
+        entity_id: input_boolean.max_solar_battery_mode
+      - platform: state
+        entity_id: input_boolean.blackout_saving_mode
+      - platform: state
+        entity_id: input_boolean.max_battery_mode
+      - platform: state
+        entity_id: input_number.morning_battery_remaining
+    condition:
+      # ГОЛОВНИЙ ВИМИКАЧ ПАКЕТА.
+      - condition: state
+        entity_id: input_boolean.package_automations_enabled
+        state: "on"
+      # НАЯВНІСТЬ МІСЬКОЇ МЕРЕЖІ: повернення на мережу можливе лише коли вона є
+      - condition: state
+        entity_id: binary_sensor.oblenergo_grid
+        state: "on"
+      # ГОЛОВНИЙ ВИМИКАЧ ЛОГІКИ ДЕНЬ/НІЧ: уся ця логіка активна лише при увімкненому Авто День/Ніч.
+      - condition: state
+        entity_id: input_boolean.auto_day_night
+        state: "on"
+      # ВИПРАВЛЕННЯ 3.1: switch.invertor_220_in → input_boolean.output_on_grid
+      - condition: state
+        entity_id: input_boolean.output_on_grid
+        state: "off"
+      # ВИПРАВЛЕННЯ 3.4: явний, однозначний сенсор готовності системи
+      - condition: state
+        entity_id: binary_sensor.system_ready_for_automation
+        state: "on"
+      # В суб-режимі "Максимум АКБ" динамічним керуванням виходу повністю опікується solar_max_battery_controller
+      - condition: state
+        entity_id: input_boolean.max_battery_mode
+        state: "off"
+      # ВИПРАВЛЕННЯ (за уточненням користувача): поріг повернення на мережу:
+      #   - вночі (23:00-07:00) в опалювальний сезон → morning_battery_remaining
+      #     (дозволяє розряджати АКБ уночі, але не нижче бажаного ранкового залишку);
+      #   - агресивний режим, Максимум АКБ або Jev AI вдень → поріг = min_target_reserve_kwh;
+      #   - звичайний/опалювальний вдень/блекаут → поріг = calculated_target_reserve_kwh.
+      - condition: template
+        value_template: >
+          {% set soc = states('sensor.bms_battery_state_of_charge') | float(0) %}
+          {% set batt_capacity_kwh = states('sensor.bms_battery_full_capacity_kwh') | float(10.0) %}
+          {% set is_aggressive = is_state('binary_sensor.aggressive_solar_mode', 'on') %}
+          {% set is_jev = is_state('input_boolean.use_jev_ai', 'on') %}
+          {% set is_max_battery = is_state('input_boolean.max_battery_mode', 'on') %}
+          {% set is_heating = is_state('binary_sensor.heating_season', 'on') %}
+          {% set is_night = now().hour >= 23 or now().hour < 7 %}
+          {% set min_reserve_kwh = states('input_number.min_target_reserve_kwh') | float(2.0) %}
+          {% set min_reserve_soc = (min_reserve_kwh / batt_capacity_kwh * 100) | round(0) if batt_capacity_kwh > 0 else 20 %}
+          {% if is_night and is_heating %}
+            {% set morning_soc = states('input_number.morning_battery_remaining') | float(40.0) %}
+            {% set threshold_soc = [morning_soc, min_reserve_soc] | max %}
+          {% elif is_aggressive or is_jev or is_max_battery %}
+            {% set threshold_soc = min_reserve_soc %}
+          {% else %}
+            {% set calc_reserve_kwh = states('sensor.calculated_target_reserve_kwh') | float(0) %}
+            {% set threshold_soc = (calc_reserve_kwh / batt_capacity_kwh * 100) | round(0) if batt_capacity_kwh > 0 else 0 %}
+          {% endif %}
+          {{ soc <= threshold_soc }}
+    action:
+      - variables:
+          soc_pct: "{{ states('sensor.bms_battery_state_of_charge') | float(0) }}"
+          batt_capacity_kwh: "{{ states('sensor.bms_battery_full_capacity_kwh') | float(10.0) }}"
+          is_aggressive: "{{ is_state('binary_sensor.aggressive_solar_mode', 'on') }}"
+          is_jev: "{{ is_state('input_boolean.use_jev_ai', 'on') }}"
+          is_heating: "{{ is_state('binary_sensor.heating_season', 'on') }}"
+          is_max_battery: "{{ is_state('input_boolean.max_battery_mode', 'on') }}"
+          is_night: "{{ now().hour >= 23 or now().hour < 7 }}"
+          min_reserve_kwh: "{{ states('input_number.min_target_reserve_kwh') | float(2.0) }}"
+          min_reserve_soc: "{{ (min_reserve_kwh / batt_capacity_kwh * 100) | round(0) if batt_capacity_kwh > 0 else 20 }}"
+          target_soc: >-
+            {% if is_night and is_heating %}
+              {% set morning_soc = states('input_number.morning_battery_remaining') | float(40.0) %}
+              {{ [morning_soc, min_reserve_soc] | max }}
+            {% elif is_aggressive or is_jev or is_max_battery %}
+              {{ min_reserve_soc }}
+            {% else %}
+              {% set calc_reserve_kwh = states('sensor.calculated_target_reserve_kwh') | float(0) %}
+              {{ (calc_reserve_kwh / batt_capacity_kwh * 100) | round(0) if batt_capacity_kwh > 0 else 0 }}
+            {% endif %}
+          is_night_hold: "{{ is_night and is_heating }}"
+      # Перевірку DIN-реле (і автоматичне його увімкнення за потреби)
+      # виконує сам script.switch_to_grid_bypass.
+      - action: script.switch_to_grid_bypass
+        data:
+          reason: >-
+            {% if is_night_hold %}
+              🌙 [Нічний захист] АКБ {{ soc_pct }}% впав до ранкового резерву ({{ target_soc | round(0) }}%). Збереження заряду на ранок.
+            {% else %}
+              ⚙️ [Локальна автоматика] Денне повернення: АКБ {{ soc_pct }}% впав до
+              {% if is_aggressive %}мінімального резерву (підстраховки){% elif is_max_battery %}мінімального резерву (Максимум АКБ){% elif is_jev %}мінімального резерву Jev{% else %}цільового резерву{% endif %}
+              ({{ target_soc | round(0) }}% / {{ (target_soc | float(0) * batt_capacity_kwh / 100) | round(1) }} кВт·год)
+            {% endif %}
+      # ДОДАНО: пояснення ПРИЧИНИ — раніше ця автоматизація не пояснювала,
+      # чому саме сталось повернення на мережу вдень (лише узагальнене
+      # сповіщення від скрипта).
+      - action: persistent_notification.create
+        data:
+          title: >-
+            {% if is_night_hold %}
+              🌙 [Нічний захист] Збереження заряду на ранок
+            {% else %}
+              ⚙️ [Локальна автоматика] Денне повернення на мережу
+            {% endif %}
+          message: >-
+            {% if is_night_hold %}
+              Заряд АКБ ({{ soc_pct }}%) впав до встановленого ранкового рівня ({{ target_soc | round(0) }}%).
+              Живлення будинку переведено на мережу для збереження резерву на ранковий пік (07:00).
+            {% else %}
+              Заряд АКБ ({{ soc_pct }}%) впав до рівня
+              {% if is_aggressive %}мінімального резерву-підстраховки (Максимум Сонця/АКБ: нижче не можна){% elif is_jev %}мінімального ліміту підстраховки для Jev AI{% else %}цільового резерву{% endif %}
+              ({{ target_soc | round(0) }}% / {{ (target_soc | float(0) * batt_capacity_kwh / 100) | round(1) }} кВт·год). Живлення будинку
+              переведено на мережу.
+            {% endif %}
+
+  # ==============================================================================
+  # НОВА АВТОМАТИЗАЦІЯ: Керування суб-режимом "Максимум АКБ"
+  # ==============================================================================
+  - id: solar_max_battery_controller
+    alias: "Solar: Керування суб-режимом Максимум АКБ"
+    description: >
+      Контролює пріоритетний заряд батареї до цільового резерву (input_number.blackout_reserve_kwh)
+      до закінчення сонячного дня (опалювальний сезон).
+      В опалювальний сезон за умови прогнозу генерації СЕС на сьогодні менше 2.5 кВт·год
+      система залишається на Мережі, аби уникнути розряджання АКБ домашніми навантаженнями
+      та циклічного смикання інвертора.
+      Перехід на СЕС дозволено виключно при прогнозі СЕС на сьогодні >= 2.5 кВт·год (та досягненні резерву
+      або потужному профіциті).
+      Увечері при завершенні сонячної генерації (СЕС < 150 Вт або захід сонця) або при слабкому прогнозі
+      утримує або переводить будинок на мережу для надійного збереження заряду АКБ.
+    mode: single
+    trigger:
+      - platform: time_pattern
+        minutes: "/10"
+      - platform: state
+        entity_id: input_boolean.max_battery_mode
+        to: "on"
+        id: mode_activated
+      - platform: state
+        entity_id: input_number.blackout_reserve_kwh
+        id: reserve_slider_changed
+      - platform: template
+        value_template: >-
+          {{ states('sensor.bms_battery_remaining_kwh') | float(0) >= (states('input_number.blackout_reserve_kwh') | float(8.0)) }}
+        id: battery_target_reached
+      - platform: state
+        entity_id: sensor.volcast_solar_forecast_energy_forecast_today
+        id: forecast_updated
+      - platform: numeric_state
+        entity_id: sensor.anenji_anj_11kw_48v_wifi_p_pv_power
+        below: 150
+        for:
+          minutes: 3
+        id: pv_ended
+      - platform: sun
+        event: sunset
+        id: sunset
+    condition:
+      - condition: state
+        entity_id: input_boolean.package_automations_enabled
+        state: "on"
+      # НАЯВНІСТЬ МІСЬКОЇ МЕРЕЖІ: керування виходом активне лише коли мережа є (без мережі інвертор живить дім автономно)
+      - condition: state
+        entity_id: binary_sensor.oblenergo_grid
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.auto_day_night
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.max_battery_mode
+        state: "on"
+      - condition: state
+        entity_id: binary_sensor.heating_season
+        state: "on"
+      - condition: state
+        entity_id: binary_sensor.system_ready_for_automation
+        state: "on"
+      # Працює в період генерації та вечірнього збереження (з 08:00 до 23:00)
+      - condition: template
+        value_template: >
+          {{ now().hour >= 8 and now().hour < 23 }}
+    action:
+      - variables:
+          soc: "{{ states('sensor.bms_battery_state_of_charge') | float(0) }}"
+          batt_rem_kwh: "{{ states('sensor.bms_battery_remaining_kwh') | float(0) }}"
+          full_cap: "{{ states('sensor.bms_battery_full_capacity_kwh') | float(10.0) }}"
+          target_reserve_kwh: "{{ [states('input_number.blackout_reserve_kwh') | float(8.0), full_cap] | min }}"
+          target_soc: "{{ (target_reserve_kwh / full_cap * 100) | round(0) if full_cap > 0 else 90 }}"
+          target_ready: "{{ batt_rem_kwh >= target_reserve_kwh or soc >= target_soc }}"
+          on_grid: "{{ is_state('input_boolean.output_on_grid', 'on') }}"
+          balance: "{{ states('sensor.max_battery_trajectory_balance') | float(0) }}"
+          pv_power: "{{ states('sensor.anenji_anj_11kw_48v_wifi_p_pv_power') | float(0) }}"
+          house_power: "{{ states('sensor.1din_relay_main_power') | float(0) }}"
+          pv_forecast_today: "{{ (states('sensor.volcast_solar_forecast_energy_forecast_today') | float(0) * (states('input_number.solar_forecast_calibration_factor') | float(1.0))) | round(2) }}"
+          mode_dwell_sec: >-
+            {% set last_ch = states.input_boolean.output_on_grid.last_changed | default(none) %}
+            {{ (now() - last_ch).total_seconds() if last_ch is not none else 3600 }}
+          dwell_ok: >-
+            {% set is_emergency = trigger.id is defined and trigger.id in ['mode_activated', 'pv_ended', 'sunset', 'reserve_slider_changed', 'battery_target_reached', 'forecast_updated'] %}
+            {% set jev_active = is_state('input_boolean.use_jev_ai', 'on') %}
+            {% set jev_time = states.input_text.jev_last_decision.last_changed | default(none) %}
+            {% set jev_recent = (now() - jev_time).total_seconds() < 180 if (jev_time is not none and jev_active) else false %}
+            {{ is_emergency or (mode_dwell_sec >= 900 and not jev_recent) }}
+      - choose:
+          # Гілка 1: Перехід на Сонце (прогноз СЕС на сьогодні >= 2.5 кВт·год, dwell_ok, І (АКБ досягла цілі або потужний профіцит))
+          - conditions:
+              - condition: template
+                value_template: >
+                  {{ on_grid and dwell_ok and pv_forecast_today >= 2.5 and (
+                    (target_ready and pv_power >= 300 and pv_power >= (house_power * 0.7)) or
+                    ((not target_ready) and balance >= 1.5 and pv_power >= (house_power + 500) and pv_power >= 1200)
+                  ) }}
+            sequence:
+              - action: script.switch_to_solar_bypass
+                data:
+                  reason: >-
+                    {% if target_ready %}
+                      🔋 [Максимум АКБ] Батарея досягла цілі ({{ batt_rem_kwh | round(2) }} кВт·год / {{ soc | round(0) }}% >= {{ target_reserve_kwh | round(1) }} кВт·год), прогноз СЕС {{ pv_forecast_today }} кВт·год >= 2.5 кВт·год — живлення дому від СЕС.
+                    {% else %}
+                      🔋 [Максимум АКБ] Потужний профіцит СЕС: прогноз {{ pv_forecast_today }} кВт·год >= 2.5 кВт·год, баланс +{{ balance }} кВт·год > дім {{ house_power | round(0) }} Вт.
+                    {% endif %}
+              - action: persistent_notification.create
+                data:
+                  title: "☀️ [Максимум АКБ] Перехід на Сонце"
+                  message: >
+                    {% if target_ready %}
+                      АКБ досягла цільового резерву ({{ batt_rem_kwh | round(2) }} кВт·год / {{ soc | round(1) }}% >= {{ target_reserve_kwh | round(1) }} кВт·год), прогноз СЕС на сьогодні {{ pv_forecast_today }} кВт·год (>= 2.5 кВт·год), сонячна генерація {{ pv_power | round(0) }} Вт покриває навантаження {{ house_power | round(0) }} Вт. Дім переведено на СЕС.
+                    {% else %}
+                      Прогноз сонячної генерації ({{ pv_forecast_today }} кВт·год >= 2.5 кВт·год) та поточний профіцит з надлишком вистачають для живлення будинку та заряду АКБ (баланс: +{{ balance }} кВт·год, генерація: {{ pv_power | round(0) }} Вт, навантаження: {{ house_power | round(0) }} Вт). Живлення будинку переведено на сонячні панелі.
+                    {% endif %}
+
+          # Гілка 2: Перехід на Мережу (прогноз < 2.5 кВт·год / вечір / сонце закінчилось / дефіцит або спад заряду нижче порогу)
+          - conditions:
+              - condition: template
+                value_template: >
+                  {{ (not on_grid) and (
+                    pv_forecast_today < 2.5 or
+                    pv_power < 150 or
+                    (now().hour >= 17 and (pv_power < house_power or pv_power < 300)) or
+                    ((soc < (target_soc - 2) or batt_rem_kwh < (target_reserve_kwh - 0.2)) and (balance < 0 or (pv_power < house_power and pv_power < 500)) and dwell_ok) or
+                    ((not target_ready) and balance < 0.5 and pv_power < (house_power + 300) and dwell_ok)
+                  ) }}
+            sequence:
+              - action: script.switch_to_grid_bypass
+                data:
+                  reason: >-
+                    {% if pv_forecast_today < 2.5 %}
+                      🔋 [Максимум АКБ] Опалювальний сезон: прогноз СЕС на сьогодні ({{ pv_forecast_today }} кВт·год < 2.5 кВт·год) — перехід на мережу для збереження заряду АКБ.
+                    {% elif pv_power < 150 or now().hour >= 17 %}
+                      🔋 [Максимум АКБ] Вечірнє збереження заряду: СЕС {{ pv_power | round(0) }} Вт, АКБ {{ soc | round(0) }}% — перехід на мережу.
+                    {% elif soc < (target_soc - 2) or batt_rem_kwh < (target_reserve_kwh - 0.2) %}
+                      🔋 [Максимум АКБ] Захист заряду АКБ: заряд {{ batt_rem_kwh | round(2) }} кВт·год ({{ soc | round(0) }}% < {{ (target_soc - 2) | round(0) }}%), баланс {{ balance }} кВт·год — перехід на мережу.
+                    {% else %}
+                      🔋 [Максимум АКБ] Пріоритет заряду АКБ: баланс {{ balance }} кВт·год, СЕС {{ pv_power | round(0) }} Вт, дім {{ house_power | round(0) }} Вт.
+                    {% endif %}
+              - action: persistent_notification.create
+                data:
+                  title: "🔌 [Максимум АКБ] Перехід на Мережу"
+                  message: >
+                    {% if pv_forecast_today < 2.5 %}
+                      Прогноз сонячної генерації на сьогодні слабкий ({{ pv_forecast_today }} кВт·год < 2.5 кВт·год). Будинок переведено на мережу для збереження заряду АКБ та запобігання циклічним перемиканням.
+                    {% elif pv_power < 150 or now().hour >= 17 %}
+                      Сонячна генерація припинилася або заслабка ({{ pv_power | round(0) }} Вт). Будинок переведено на мережу для збереження заряду АКБ (поточний SOC: {{ soc | round(1) }}%, {{ batt_rem_kwh | round(2) }} кВт·год).
+                    {% elif soc < (target_soc - 2) or batt_rem_kwh < (target_reserve_kwh - 0.2) %}
+                      Заряд АКБ знизився нижче порогу захисту цільового резерву ({{ batt_rem_kwh | round(2) }} кВт·год / {{ soc | round(1) }}% < ціль {{ target_reserve_kwh | round(1) }} кВт·год). Будинок переведено на мережу для дозаряду батареї.
+                    {% else %}
+                      Дефіцит енергії для гарантованого заряду АКБ до цільового резерву {{ target_reserve_kwh | round(1) }} кВт·год до вечора (траєкторний баланс: {{ balance }} кВт·год, генерація: {{ pv_power | round(0) }} Вт). Будинок переведено на мережу, сонячна потужність спрямована на заряд АКБ.
+                    {% endif %}
+
+  # ==============================================================================
+  # АВТОМАТИЗАЦІЯ: Моніторинг наявності міської мережі (Львівобленерго)
+  # ==============================================================================
+  - id: solar_grid_outage_handler
+    alias: "Solar: Фіксація стану міської електромережі"
+    description: >
+      Фіксує зникнення та відновлення міської електромережі (binary_sensor.oblenergo_grid).
+      При зникненні мережі не виконує жодних перемикань виходу інвертора (цим керує залізо),
+      лише сповіщає користувача та призупиняє автоматику.
+      При стабільному відновленні електропостачання сповіщає та ініціює переоцінку режимів.
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.oblenergo_grid
+        from: "on"
+        to: "off"
+        id: grid_lost
+      - platform: state
+        entity_id: binary_sensor.oblenergo_grid
+        from: "off"
+        to: "on"
+        for:
+          seconds: 15
+        id: grid_restored
+    condition:
+      - condition: state
+        entity_id: input_boolean.package_automations_enabled
+        state: "on"
+    action:
+      - choose:
+          # Подія 1: Зникнення міської електромережі
+          - conditions:
+              - condition: trigger
+                id: grid_lost
+            sequence:
+              - action: persistent_notification.create
+                data:
+                  notification_id: "solar_grid_outage"
+                  title: "🚨 [Мережа] Відсутнє електропостачання"
+                  message: >
+                    Міську електромережу (Львівобленерго) знеструмлено.
+                    Живлення будинку автоматично підтримується інвертором від СЕС та АКБ (заряд: {{ states('sensor.bms_battery_state_of_charge') }}%).
+                    Автоматичні перемикання режимів виходу призупинено до відновлення напруги.
+
+          # Подія 2: Відновлення міської електромережі
+          - conditions:
+              - condition: trigger
+                id: grid_restored
+            sequence:
+              - action: persistent_notification.dismiss
+                data:
+                  notification_id: "solar_grid_outage"
+              - action: persistent_notification.create
+                data:
+                  title: "⚡ [Мережа] Електропостачання відновлено"
+                  message: >
+                    Напруга в міській електромережі стабільна. Автоматика пакету повертається до штатного контролю режимів.
+              # Переоцінка режимів після відновлення мережі:
+              - if:
+                  # Якщо увімкнено суб-режим "Максимум АКБ"
+                  - condition: state
+                    entity_id: input_boolean.max_battery_mode
+                    state: "on"
+                then:
+                  - action: automation.trigger
+                    target:
+                      entity_id: automation.solar_keruvannia_sub_rezhimom_maksimum_akb
+                    data:
+                      skip_condition: false
+                else:
+                  - if:
+                      # Якщо увімкнено Jev AI
+                      - condition: state
+                        entity_id: input_boolean.use_jev_ai
+                        state: "on"
+                    then:
+                      - action: script.jev_evaluate_output_mode
+                        data:
+                          phase: "manual"
+
+  # ==============================================================================
+  # АВТОМАТИЗАЦІЯ: САМОВІДНОВЛЕННЯ DIN-РЕЛЕ (АВТОМАТИЧНИЙ КОНТРОЛЬ)
+  # ==============================================================================
+  # Працює ТІЛЬКИ коли увімкнено input_boolean.auto_control_din_relay.
+  # Автоматика вмикає switch.invertor_220_in назад, якщо воно вимкнулось
+  # (через 20 секунд затримки), або одразу при увімкненні перемикача авто-контролю.
+  # Якщо input_boolean.auto_control_din_relay вимкнено — автоматика НЕ вмикає реле.
+  - id: grid_relay_manual_off_watchdog
+    alias: "Автоматизація: Само-відновлення DIN-реле мережі (завжди увімкнене)"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: switch.invertor_220_in
+        to: "off"
+        for:
+          seconds: 20
+      - platform: state
+        entity_id: input_boolean.auto_control_din_relay
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: input_boolean.package_automations_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.auto_control_din_relay
+        state: "on"
+      - condition: state
+        entity_id: switch.invertor_220_in
+        state: "off"
+    action:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.invertor_220_in
+      - action: persistent_notification.create
+        data:
+          title: "🔌 DIN-реле мережі автоматично увімкнено назад"
+          message: >
+            switch.invertor_220_in було вимкнено (вручну або через збій).
+            Оскільки перемикач «Автоматичний контроль DIN-реле» увімкнено,
+            автоматика повернула реле в стан ON.
+
+  # ==============================================================================
+  # АВТОМАТИЗАЦІЯ: РОЗКЛАД AI-РІШЕНЬ JEV (БАЗОВИЙ + ЩОГОДИННИЙ У ПОГАНУ ПОГОДУ)
+  # ==============================================================================
+  # Викликає Jev AI:
+  #   1. Безумовно у 5 ключових точок доби: 07:00, 11:00, 13:00, 17:00, 23:00.
+  #   2. Щогодини у денні вікна (з 07:00 до 19:00), ЯКЩО денний прогноз СЕС
+  #      менший за поріг у слайдері input_number.bad_weather_solar_threshold_kwh.
+  #   3. Щогодини вранці (з 08:00 до 12:00), ЯКЩО інвертор зараз на мережі (output_on_grid=on),
+  #      щоб перемкнутися на сонце одразу після ранкового заряду АКБ понад резерв.
+  #   4. Разово при увімкненні тумблера use_jev_ai або ручному запуску.
+  # Після 19:00 перевірки припиняються, наступна — о 23:00 (як зазвичай).
+  # Працює ТІЛЬКИ коли увімкнено input_boolean.use_jev_ai.
+  - id: solar_jev_schedule
+    alias: "Solar: Розклад AI-рішень Jev (базовий + негода + ранкове повернення на сонце)"
+    mode: single
+    trigger:
+      - platform: time_pattern
+        hours: "/1"
+        minutes: 0
+        seconds: 0
+        id: hourly
+      - platform: state
+        entity_id: input_boolean.use_jev_ai
+        to: "on"
+        id: toggled_on
+    condition:
+      - condition: state
+        entity_id: input_boolean.package_automations_enabled
+        state: "on"
+      # НАЯВНІСТЬ МІСЬКОЇ МЕРЕЖІ: Jev AI оцінює вихід лише коли мережа присутня
+      - condition: state
+        entity_id: binary_sensor.oblenergo_grid
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.auto_day_night
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.use_jev_ai
+        state: "on"
+      - condition: state
+        entity_id: binary_sensor.system_ready_for_automation
+        state: "on"
+      - condition: template
+        value_template: >-
+          {% if trigger is not defined or trigger.id is not defined or trigger.id == 'toggled_on' %}
+            true
+          {% else %}
+            {% set h = now().hour %}
+            {% if h in [7, 11, 13, 17, 23] %}
+              true
+            {% elif h >= 7 and h <= 19 %}
+              {% set thresh = states('input_number.bad_weather_solar_threshold_kwh') | float(5.0) %}
+              {% set forecast_today = states('sensor.volcast_solar_forecast_energy_forecast_today') | float(0) %}
+              {% set on_grid = is_state('input_boolean.output_on_grid', 'on') %}
+              {{ (forecast_today < thresh) or (h >= 8 and h <= 12 and on_grid) }}
+            {% else %}
+              false
+            {% endif %}
+          {% endif %}
+    action:
+      - variables:
+          current_hour: "{{ now().hour }}"
+          target_phase: >-
+            {% if current_hour >= 7 and current_hour < 11 %}morning_07
+            {% elif current_hour >= 11 and current_hour < 13 %}lunch_11
+            {% elif current_hour >= 13 and current_hour < 17 %}afternoon_13
+            {% elif current_hour >= 17 and current_hour < 23 %}evening_17
+            {% else %}night_23{% endif %}
+      - action: script.jev_evaluate_output_mode
+        data:
+          phase: "{{ target_phase }}"
